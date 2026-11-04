@@ -1867,7 +1867,9 @@ export function GraphCanvas<N = unknown, L = unknown>({
       color: string;
       visual: HighlightStyle;
       dash: boolean;
-      segments: { source: NodePoint; target: NodePoint }[];
+      curve: number;
+      arrow: boolean;
+      segments: { source: NodePoint; target: NodePoint; targetRadius: number }[];
     };
     const groups = new Map<string, Group>();
     for (let index = 0; index < graphData.links.length; index += 1) {
@@ -1879,13 +1881,20 @@ export function GraphCanvas<N = unknown, L = unknown>({
       if (!source || !target) continue;
       const color = link.color ?? palette.edge;
       const visual = highlight.linkStyle(index);
-      const key = `${color}|${visual.id}|${link.dashed}`;
+      const key = `${color}|${visual.id}|${link.dashed}|${link.curve}|${link.arrow}`;
       let group = groups.get(key);
       if (!group) {
-        group = { color, visual, dash: link.dashed, segments: [] };
+        group = {
+          color,
+          visual,
+          dash: link.dashed,
+          curve: link.curve,
+          arrow: link.arrow,
+          segments: [],
+        };
         groups.set(key, group);
       }
-      group.segments.push({ source, target });
+      group.segments.push({ source, target, targetRadius: target.radius });
     }
     return [...groups.values()];
   }, [graphData.links, nodeIndex, palette, highlight]);
@@ -1940,8 +1949,39 @@ export function GraphCanvas<N = unknown, L = unknown>({
             Math.min(source.y, target.y) - margin > bottom
           )
             continue;
-          path.moveTo(source.x, source.y);
-          path.lineTo(target.x, target.y);
+          if (group.curve === 0 && !group.arrow) {
+            path.moveTo(source.x, source.y);
+            path.lineTo(target.x, target.y);
+            continue;
+          }
+          const control = curveControl(source.x, source.y, target.x, target.y, group.curve);
+          if (group.arrow) {
+            // Stop the stroke at the head so the line does not poke through it.
+            const size = arrowSizeFor(group.visual.width) / camera.k;
+            const trim = trimForArrow(
+              source.x,
+              source.y,
+              control.x,
+              control.y,
+              target.x,
+              target.y,
+              size + target.radius,
+            );
+            const end = quadPoint(
+              source.x,
+              source.y,
+              control.x,
+              control.y,
+              target.x,
+              target.y,
+              1 - trim,
+            );
+            path.moveTo(source.x, source.y);
+            path.quadraticCurveTo(control.x, control.y, end.x, end.y);
+          } else {
+            path.moveTo(source.x, source.y);
+            path.quadraticCurveTo(control.x, control.y, target.x, target.y);
+          }
         }
         context.lineWidth = group.visual.width / camera.k;
         context.setLineDash(group.dash ? DASHED_LINE : SOLID_LINE);
@@ -1956,6 +1996,34 @@ export function GraphCanvas<N = unknown, L = unknown>({
           context.stroke(path);
         }
       }
+      // Heads are filled after all strokes so a neighbouring link cannot draw
+      // over them, and each one picks the colour its group was stroked in.
+      for (const group of linkGroups) {
+        if (!group.arrow) continue;
+        const size = arrowSizeFor(group.visual.width) / camera.k;
+        const alpha =
+          group.visual.accent > 0
+            ? group.visual.opacity * group.visual.accent
+            : group.visual.opacity;
+        const fill = group.visual.accent > 0 ? palette.accent : group.color;
+        context.globalAlpha = alpha;
+        context.fillStyle = fill;
+        for (const { source, target, targetRadius } of group.segments) {
+          if (typeof source.x !== "number" || typeof source.y !== "number") continue;
+          if (typeof target.x !== "number" || typeof target.y !== "number") continue;
+          const reach = size + targetRadius;
+          if (
+            Math.max(source.x, target.x) + reach < left ||
+            Math.min(source.x, target.x) - reach > right ||
+            Math.max(source.y, target.y) + reach < top ||
+            Math.min(source.y, target.y) - reach > bottom
+          )
+            continue;
+          const control = curveControl(source.x, source.y, target.x, target.y, group.curve);
+          drawArrowhead(context, control.x, control.y, target.x, target.y, targetRadius, size);
+        }
+      }
+      context.globalAlpha = 1;
       context.setLineDash(SOLID_LINE);
 
       context.strokeStyle = palette.background;
@@ -2198,6 +2266,105 @@ export function GraphCanvas<N = unknown, L = unknown>({
 }
 
 const EMPTY_IDS: ReadonlySet<string> = new Set();
+/**
+ * Control point for a quadratic link curve.
+ *
+ * `curve` is the offset of the control point from the chord midpoint, as a
+ * fraction of the chord length: 0 is a straight line, 0.2 bows it noticeably.
+ * Both endpoints stay fixed, which is what keeps curved links anchored to the
+ * node centres while the simulation moves them.
+ */
+function curveControl(
+  sx: number,
+  sy: number,
+  tx: number,
+  ty: number,
+  curve: number,
+): { x: number; y: number } {
+  const dx = tx - sx;
+  const dy = ty - sy;
+  // Perpendicular of the chord, pointing to its left.
+  return { x: (sx + tx) / 2 - dy * curve, y: (sy + ty) / 2 + dx * curve };
+}
+
+/** Point `t` along a quadratic curve. */
+function quadPoint(
+  sx: number,
+  sy: number,
+  cx: number,
+  cy: number,
+  tx: number,
+  ty: number,
+  t: number,
+) {
+  const inv = 1 - t;
+  return {
+    x: inv * inv * sx + 2 * inv * t * cx + t * t * tx,
+    y: inv * inv * sy + 2 * inv * t * cy + t * t * ty,
+  };
+}
+
+/**
+ * Trim distance for an arrowhead of `size`, in curve parameter space.
+ *
+ * The tangent shortens as the curve bends, so a fixed `t` would leave the head
+ * short of (or inside) the target node. Sampling the parameter keeps the tip on
+ * the node edge for straight and curved links alike.
+ */
+function trimForArrow(
+  sx: number,
+  sy: number,
+  cx: number,
+  cy: number,
+  tx: number,
+  ty: number,
+  size: number,
+): number {
+  const length = Math.hypot(cx - sx, cy - sy) + Math.hypot(tx - cx, ty - cy);
+  if (length < 1e-6) return 0;
+  return Math.min(0.45, size / length);
+}
+
+/**
+ * Fill an arrowhead whose tip sits on the target node's edge.
+ *
+ * The tip has to stop at the circle rather than the centre, or the head is
+ * drawn underneath the node and never seen — which is what happened before the
+ * node radius was part of this calculation.
+ */
+function drawArrowhead(
+  context: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  tx: number,
+  ty: number,
+  targetRadius: number,
+  size: number,
+): void {
+  // Tangent at t = 1 points from the control point towards the target.
+  let dx = tx - cx;
+  let dy = ty - cy;
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-6) return;
+  dx /= length;
+  dy /= length;
+  // Pull the tip back to the node's silhouette.
+  const tipX = tx - dx * targetRadius;
+  const tipY = ty - dy * targetRadius;
+  const half = size * 0.5;
+  context.beginPath();
+  context.moveTo(tipX, tipY);
+  context.lineTo(tipX - dx * size - dy * half, tipY - dy * size + dx * half);
+  context.lineTo(tipX - dx * size + dy * half, tipY - dy * size - dx * half);
+  context.closePath();
+  context.fill();
+}
+
+/** Arrowhead length in CSS pixels, scaled with the link so thin edges stay subtle. */
+function arrowSizeFor(width: number): number {
+  return 6 + width * 2.2;
+}
+
 const DASHED_LINE = [3, 3];
 const SOLID_LINE: number[] = [];
 

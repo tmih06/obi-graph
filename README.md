@@ -95,7 +95,8 @@ never mutated.
 pinned topic note).
 
 **Link fields:** `source`, `target`, `id`, `data`, `color`, `width`, `dashed`,
-`distance`, `strength`.
+`distance`, `strength`, `curve` (0 is straight; two links between the same pair
+need opposite signs), `arrow` (head at the target end).
 
 Duplicate ids and unknown endpoints throw descriptive errors.
 
@@ -230,6 +231,12 @@ them — survivors are re-attached to their nearest kept ancestor, so the graph
 stays one connected tree at any density. The six animal classes hang off their
 real shared ancestry (class → clade → phylum → Animalia); those shared nodes are
 drawn neutral grey because they belong to no single class.
+
+Selecting a node opens a note panel: an overlay like Obsidian's, which never
+re-frames the graph. Notes are markdown composed from the same taxonomy, with
+`[[wiki-links]]` that jump between nodes. The markdown parser is loaded with a
+dynamic import only when the first note opens, and it is demo-only — the
+published library has no markdown dependency.
 
 Data is generated once by `bun scripts/fetch-taxonomy.ts` and committed as
 `src/demo/animal-data.ts`, so the demo runs offline.

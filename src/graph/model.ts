@@ -37,6 +37,13 @@ export interface GraphLink<Data = unknown> {
   dashed?: boolean;
   distance?: number;
   strength?: number;
+  /**
+   * Curvature of the stroke, 0 for straight. Two links between the same pair
+   * must use opposite signs or they will overlap.
+   */
+  curve?: number;
+  /** Draw an arrowhead at the target end. */
+  arrow?: boolean;
 }
 
 export type Endpoint = string | number | { id?: unknown };

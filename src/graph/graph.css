@@ -65,6 +65,10 @@
   z-index: 30;
   inset-block-start: 12px;
   inset-inline-end: 12px;
+  /* A host overlay such as a note panel can reserve the right edge by setting
+     --graph-inset-right on the graph box; the camera does not move. */
+  margin-inline-end: var(--graph-inset-right, 0px);
+  transition: margin-inline-end 220ms cubic-bezier(0.22, 1, 0.36, 1);
   display: flex;
   align-items: center;
   gap: 2px;

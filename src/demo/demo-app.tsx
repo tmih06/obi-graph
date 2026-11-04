@@ -15,6 +15,8 @@ import {
   GraphPlayground,
   type PlaygroundSettings,
 } from "./graph-playground.tsx";
+import { NoteDrawer } from "./note-drawer.tsx";
+import { noteFor, resolveWikiLink } from "./note-content.ts";
 
 const THEME_KEY = "obi-graph-theme";
 
@@ -66,7 +68,7 @@ export function DemoApp() {
     linkStrength: 0.45,
     linkDistance: 70,
     nodeScale: 1,
-    density: 100,
+    density: 50,
     showLabels: true,
     showControls: true,
   });
@@ -78,6 +80,22 @@ export function DemoApp() {
    * instead of reshuffling the map under the pointer.
    */
   const graph = useMemo(() => sampleAnimalGraph(baseGraph, density), [baseGraph, density]);
+
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  /**
+   * The note follows the selection, so a wiki-link jump re-renders the panel in
+   * place. Composed lazily: only the open note is built.
+   */
+  const selectedNode = useMemo(
+    () => (selectedId ? graph.nodes.find((node) => node.id === selectedId) : undefined),
+    [graph, selectedId],
+  );
+  const selectedLabel = selectedNode?.label ?? selectedId ?? "";
+  const selectedMarkdown = useMemo(
+    () => (selectedId ? noteFor(selectedId, selectedLabel) : ""),
+    [selectedId, selectedLabel],
+  );
 
   /**
    * Three thousand nodes need a cheaper solver: a short charge radius keeps the
@@ -110,6 +128,11 @@ export function DemoApp() {
         // set on purpose: the theme's edge colour is translucent and must stay
         // that way, or a few thousand links paint over the whole map.
         width: (link) => (link.data?.trunk ? 1.4 : link.data?.species ? 0.5 : 0.85),
+        // Species edges are directed (species -> genus), so they get a subtle
+        // bow and an arrowhead. The trunk stays a plain stroke: it is a
+        // hierarchy, and curving it into a knot reads as noise.
+        curve: (link) => (link.data?.species ? 0.08 : 0),
+        arrow: (link) => link.data?.species === true,
         // Species sit tight to their genus; trunk links span the gap between
         // clusters so the shared ancestry stays visible when zoomed out.
         distance: (link) =>
@@ -129,6 +152,7 @@ export function DemoApp() {
       // would otherwise dim the map the moment it crosses a cluster.
       interaction: { hoverMinZoom: 1.1 },
       labels: { visible: showLabels, hubLabelsAlways: true, zoomThreshold: 1.1 },
+      // Selecting a node must not reframe the graph: the note opens over it.
       camera: { autoFitSelection: false },
       controls: showControls,
     }),
@@ -136,12 +160,20 @@ export function DemoApp() {
   );
 
   return (
-    <main className="demo" aria-label="Animal taxonomy graph">
+    <main
+      className="demo"
+      aria-label="Animal taxonomy graph"
+      // The drawer is an overlay, but the graph's own chrome has to stay
+      // reachable, so the canvas shifts its toolbar rather than re-framing.
+      data-note-open={selectedId ? "true" : "false"}
+    >
       <GraphCanvas
         theme={theme}
         nodes={graph.nodes}
         links={graph.links}
         config={config}
+        selectedId={selectedId}
+        onSelect={(id) => setSelectedId(id)}
         onMetrics={playgroundOpen ? metrics.update : undefined}
       />
 
@@ -161,6 +193,18 @@ export function DemoApp() {
           : ""}
         {" · "}data from Wikidata
       </div>
+
+      <NoteDrawer
+        nodeId={selectedId}
+        title={selectedLabel}
+        markdown={selectedMarkdown}
+        onNavigate={(target) => {
+          // Notes name taxa by display name; the graph is keyed by QID.
+          const id = resolveWikiLink(target);
+          if (id) setSelectedId(id);
+        }}
+        onClose={() => setSelectedId(null)}
+      />
 
       <GraphPlayground
         settings={settings}

@@ -55,6 +55,8 @@ export interface LinkPoint extends SimulationLinkDatum<NodePoint> {
   id: string;
   width: number;
   dashed: boolean;
+  curve: number;
+  arrow: boolean;
   distance: number;
   strength: number;
   source: string | number | NodePoint;
@@ -321,6 +323,8 @@ export function makeGraphData<N = unknown, L = unknown>(
       target: link.target,
       width: link.width ?? resolveValue(config.links.width, link),
       dashed: link.dashed ?? resolveValue(config.links.dashed, link),
+      curve: link.curve ?? resolveValue(config.links.curve, link),
+      arrow: link.arrow ?? resolveValue(config.links.arrow, link),
       distance,
       strength,
       color: link.color ?? optionalValue(config.links.color, link),

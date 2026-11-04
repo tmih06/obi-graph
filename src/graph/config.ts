@@ -33,6 +33,10 @@ export interface GraphLinksConfig<L = unknown> {
   dashed: GraphValue<GraphLink<L>, boolean>;
   distance: GraphValue<GraphLink<L>, number>;
   strength: GraphValue<GraphLink<L>, number>;
+  /** Curvature, 0 for straight. */
+  curve: GraphValue<GraphLink<L>, number>;
+  /** Arrowhead at the target end. */
+  arrow: GraphValue<GraphLink<L>, boolean>;
 }
 
 export interface GraphLabelsConfig {
@@ -112,6 +116,8 @@ export interface ResolvedGraphLinksConfig<L = unknown> {
   distance: GraphValue<GraphLink<L>, number> | undefined;
   /** Absent: `physics.linkStrength` applies. */
   strength: GraphValue<GraphLink<L>, number> | undefined;
+  curve: GraphValue<GraphLink<L>, number>;
+  arrow: GraphValue<GraphLink<L>, boolean>;
 }
 
 export interface ResolvedGraphLabelsConfig {
@@ -179,6 +185,8 @@ export const DEFAULT_GRAPH_CONFIG: ResolvedGraphConfig<any, any> = {
     dashed: false,
     distance: undefined,
     strength: undefined,
+    curve: 0,
+    arrow: false,
   },
   labels: {
     visible: true,
