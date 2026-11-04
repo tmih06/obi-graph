@@ -3,9 +3,8 @@
  * graph. Species hang off their genus, genera off their nearest family or
  * order, and everything ends at one of six animal classes.
  *
- * The payload carries domain facts only (rank, scientific name, description,
- * Wikipedia prominence); the engine never reads them. The demo maps them to
- * size, shape and colour below.
+ * The payload carries domain facts only (rank, names, Wikipedia prominence); the
+ * engine never reads them. The demo maps them to size, shape and colour below.
  */
 
 import { ANIMAL_CLASSES, ANIMAL_SPECIES, ANIMAL_TAXA } from "./animal-data.ts";
@@ -31,8 +30,6 @@ export interface AnimalNodeData {
   rank: AnimalRank;
   /** Scientific name for species, common name for higher taxa. */
   name: string;
-  /** One-line Wikipedia description; empty for higher taxa. */
-  description: string;
   /** Animal class this taxon belongs to, e.g. "Mammals". */
   group: string;
   /** Wikipedia language editions carrying the article; 0 for higher taxa. */
@@ -145,7 +142,6 @@ export function buildAnimalGraph(): AnimalGraph {
       data: {
         rank: "class",
         name: group.name,
-        description: "",
         group: group.name,
         links: 0,
       },
@@ -218,7 +214,6 @@ export function buildAnimalGraph(): AnimalGraph {
       data: {
         rank: taxon.rank as AnimalRank,
         name: taxon.name,
-        description: "",
         group: taxon.group,
         links: 0,
       },
@@ -245,8 +240,7 @@ export function buildAnimalGraph(): AnimalGraph {
       y: position.y,
       data: {
         rank: "species",
-        name: species.common,
-        description: species.description,
+        name: species.scientific,
         group: species.group,
         links: species.links,
       },

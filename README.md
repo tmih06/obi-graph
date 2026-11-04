@@ -167,14 +167,30 @@ Toolbar tokens: `--graph-control-surface`, `--graph-control-line`, `--graph-cont
 ```sh
 bun install
 bun run dev      # demo on port 5190 (PORT overrides)
-bun test         # layout, model and label-collision tests
+bun test         # layout, forces, sampling, model and label tests
 bun run check    # formatting, lint, typecheck
 bun run build    # library in dist/, demo in demo-dist/
+BASE_PATH=/obi-graph/ bun run build:demo   # demo served from a subpath
 ```
 
 The demo is a real animal taxonomy: 1,420 species and 2,165 higher taxa sampled from Wikidata. The Playground's **Nodes** slider keeps a stable random 1–100% of them — survivors are re-attached to their nearest kept ancestor, so the graph stays one connected tree at any density instead of dissolving into disconnected fragments. Species are ranked by how many Wikipedia language editions carry them, so recognisable animals dominate. The six sampled classes stay connected through their real shared ancestry — class → clade → phylum → Animalia — instead of six disconnected trees; those shared nodes are drawn in a neutral grey because they belong to no single class.
 
 Data is generated once by `bun scripts/fetch-taxonomy.ts` and committed as `src/demo/animal-data.ts`, so the demo runs offline. Bottom-left **Playground** exposes live force, size, label and theme controls; bottom-right shows the node count.
+
+### Hosting on GitHub Pages
+
+`.github/workflows/pages.yml` builds and publishes `demo-dist` on every push to `main`, with `BASE_PATH` set from the repository name so a project site resolves under `/<repo>/`. Enable it under **Settings → Pages → Source: GitHub Actions**. For a user site or a custom domain, set `BASE_PATH=/`.
+
+Transfer budget on a static host (gzip, measured on the built artifact):
+
+| Asset               | Size        |
+| ------------------- | ----------- |
+| `animal-data` chunk | 54 KB       |
+| app + engine chunk  | 87 KB       |
+| CSS + HTML          | 3 KB        |
+| **Total**           | **~143 KB** |
+
+Two choices keep it there. The taxonomy ships as a **positional, interned payload**: every Wikidata QID, rank and group name appears once in a lookup table and rows carry small integers, which is a third of the bytes of a list of objects. Rolldown then emits it as a **separate chunk with `modulepreload`**, so data and code download in parallel and the graph's first paint is not blocked by the payload. The `description` and `common` name fields were dropped: nothing rendered them, and together they were 20 KB.
 
 ## Migrating from the source-only interface
 
