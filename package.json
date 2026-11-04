@@ -1,7 +1,23 @@
 {
   "name": "obi-graph",
   "version": "0.1.0",
-  "description": "Canvas graph render engine: d3-force layout, camera pan/zoom, node dragging and selection.",
+  "description": "Obsidian-style force-directed graph view for React on a single canvas: zoom-faded labels, hover focus, draggable nodes, pan and zoom.",
+  "keywords": [
+    "canvas",
+    "d3-force",
+    "force-directed",
+    "graph",
+    "graph-view",
+    "network",
+    "obsidian",
+    "react",
+    "visualization"
+  ],
+  "homepage": "https://github.com/tmih06/obi-graph#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tmih06/obi-graph.git"
+  },
   "files": [
     "dist"
   ],

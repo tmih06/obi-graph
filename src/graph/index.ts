@@ -1,6 +1,5 @@
-// Graph render engine.
-//
-// Public entry: the canvas component and the model it consumes. Import the
+// Public entry: the canvas component and the model it consumes. It renders an
+// Obsidian-style force-directed graph view on a single canvas. Import the
 // stylesheet once per app: `import "obi-graph/styles.css"` (or the local path
 // `./graph/graph.css`).
 
