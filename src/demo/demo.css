@@ -1,0 +1,329 @@
+/* Demo shell. The graph keeps its own palette tokens; these styles only lay
+   out the harness around it. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--demo-chrome);
+  color: var(--demo-fg);
+  font-family: var(--graph-font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+:root {
+  --demo-chrome: #f5f5f5;
+  --demo-surface: #ffffff;
+  --demo-line: #e4e4e4;
+  --demo-fg: #0a0a0a;
+  --demo-fg-2: #4a4a4a;
+  --demo-fg-3: #737373;
+  --demo-hover: #f4f4f4;
+  --demo-active: #ededed;
+  --demo-focus: #6b6b6b;
+}
+
+.dark {
+  --demo-chrome: #141416;
+  --demo-surface: #1b1c1f;
+  --demo-line: #2e2f33;
+  --demo-fg: #f7f7f7;
+  --demo-fg-2: #c4c4c4;
+  --demo-fg-3: #8f8f8f;
+  --demo-hover: #232427;
+  --demo-active: #2b2c30;
+  --demo-focus: #8a8a8a;
+}
+
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
+}
+
+.demo {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+}
+
+.demo__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  border-block-end: 1px solid var(--demo-line);
+  background: var(--demo-chrome);
+}
+
+.demo__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.demo__subtitle {
+  margin: 2px 0 0;
+  color: var(--demo-fg-3);
+  font-size: 11.5px;
+}
+
+.demo__button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--demo-line);
+  border-radius: 6px;
+  background: var(--demo-surface);
+  color: var(--demo-fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background-color 150ms ease-out,
+    border-color 150ms ease-out;
+}
+
+.demo__button:hover {
+  border-color: var(--demo-fg-3);
+  background: var(--demo-hover);
+}
+
+.demo__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 304px;
+  min-height: 0;
+}
+
+@media (max-width: 900px) {
+  .demo__body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  .demo__side {
+    border-inline-start: 0;
+    border-block-start: 1px solid var(--demo-line);
+    max-height: 40dvh;
+  }
+}
+
+/* The stage is the positioning context the canvas fills. */
+.demo__stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--graph-surface);
+}
+
+.demo__legend {
+  position: absolute;
+  inset-block-start: 12px;
+  inset-inline-start: 12px;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--graph-control-line);
+  border-radius: 8px;
+  background: var(--graph-control-surface);
+  color: var(--graph-control-fg);
+  font-size: 10.5px;
+  backdrop-filter: blur(8px);
+}
+
+.demo__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.demo__swatch {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 9999px;
+  background: var(--graph-node-focused);
+}
+
+.demo__swatch[data-shape="square"] {
+  border-radius: 2px;
+}
+
+.demo__swatch[data-shape="video"] {
+  border-radius: 1px;
+  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+}
+
+.demo__swatch[data-shape="audio"] {
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+
+.demo__swatch[data-shape="pentagon"] {
+  border-radius: 1px;
+  clip-path: polygon(50% 0%, 100% 38%, 82% 100%, 18% 100%, 0% 38%);
+}
+
+.demo__swatch--dashed {
+  border-radius: 0;
+  background: transparent;
+  border-block-start: 1px dashed var(--graph-line);
+  height: 0;
+  width: 12px;
+}
+
+.demo__side {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  padding: 14px;
+  overflow-y: auto;
+  border-inline-start: 1px solid var(--demo-line);
+  background: var(--demo-chrome);
+  scrollbar-width: thin;
+}
+
+.demo__heading {
+  margin: 0 0 8px;
+  color: var(--demo-fg-3);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.demo__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.demo__chip {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--demo-line);
+  border-radius: 6px;
+  background: var(--demo-surface);
+  color: var(--demo-fg-3);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition:
+    color 150ms ease-out,
+    background-color 150ms ease-out;
+}
+
+.demo__chip:hover {
+  background: var(--demo-hover);
+  color: var(--demo-fg);
+}
+
+.demo__chip[aria-pressed="true"] {
+  background: var(--demo-active);
+  color: var(--demo-fg);
+  border-color: var(--demo-fg-3);
+}
+
+.demo__detail {
+  display: grid;
+  gap: 8px;
+}
+
+.demo__detail-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.demo__detail-body {
+  margin: 0;
+  color: var(--demo-fg-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.demo__stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.demo__stats div {
+  padding: 6px 8px;
+  border: 1px solid var(--demo-line);
+  border-radius: 6px;
+  background: var(--demo-surface);
+}
+
+.demo__stats dt {
+  color: var(--demo-fg-3);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.demo__stats dd {
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.demo__connections {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.demo__connection {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--demo-fg-2);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.demo__connection:hover {
+  background: var(--demo-hover);
+  color: var(--demo-fg);
+}
+
+.demo__relation {
+  flex: none;
+  color: var(--demo-fg-3);
+  font-size: 10px;
+}
+
+.demo__muted {
+  margin: 0;
+  color: var(--demo-fg-3);
+  font-size: 11.5px;
+  line-height: 1.5;
+}

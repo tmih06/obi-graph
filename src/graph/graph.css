@@ -1,0 +1,122 @@
+/*
+ * Graph engine styles. The canvas paints its own pixels, so this file only
+ * supplies the palette tokens the renderer reads at runtime plus the layout of
+ * the canvas box and its view controls. Every token has a light default and a
+ * `.dark` override, mirroring how the host swaps themes.
+ */
+
+:root {
+  color-scheme: light;
+
+  --graph-surface: #ffffff;
+  --graph-foreground: #0a0a0a;
+  --graph-text: #737373;
+  --graph-line: #737373;
+
+  /* Anchor kinds: segment hubs and attachment pools keep their own hue. */
+  --graph-node: #737373;
+  --graph-node-focused: #7048e8;
+  --graph-node-attachment: #a3a3a3;
+
+  /* Chrome around the graph. */
+  --graph-control-surface: rgb(255 255 255 / 0.9);
+  --graph-control-line: #e4e4e4;
+  --graph-control-fg: #737373;
+  --graph-control-fg-hover: #0a0a0a;
+  --graph-control-hover: #f4f4f4;
+  --graph-control-shadow: 0 1px 2px rgb(10 10 10 / 0.04);
+
+  --graph-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --graph-surface: #1b1c1f;
+  --graph-foreground: #f7f7f7;
+  --graph-text: #8f8f8f;
+  --graph-line: #a3a3a3;
+
+  --graph-node: #b3b3b3;
+  --graph-node-focused: #a78bfa;
+  --graph-node-attachment: #b3b3b3;
+
+  --graph-control-surface: rgb(27 28 31 / 0.9);
+  --graph-control-line: #2e2f33;
+  --graph-control-fg: #8f8f8f;
+  --graph-control-fg-hover: #f7f7f7;
+  --graph-control-hover: #232427;
+  --graph-control-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+}
+
+/* The canvas fills whatever box it is given; sizes come from the caller. */
+.graph-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.graph-canvas__surface {
+  position: absolute;
+  inset: 0;
+  display: block;
+  touch-action: none;
+}
+
+/* View controls float clear of the bottom edge so a footer can sit under them. */
+.graph-canvas__toolbar {
+  position: absolute;
+  z-index: 30;
+  inset-block-end: 48px;
+  inset-inline-end: 12px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--graph-control-line);
+  border-radius: 8px;
+  background: var(--graph-control-surface);
+  color: var(--graph-control-fg);
+  box-shadow: var(--graph-control-shadow);
+  backdrop-filter: blur(8px);
+  transition: color 150ms ease-out;
+}
+
+.graph-canvas__toolbar:hover {
+  color: var(--graph-control-fg-hover);
+}
+
+.graph-canvas__control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    background-color 150ms ease-out,
+    transform 150ms ease-out;
+}
+
+.graph-canvas__control svg {
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+
+.graph-canvas__control:hover {
+  background: var(--graph-control-hover);
+}
+
+.graph-canvas__control:active {
+  transform: scale(0.97);
+}
+
+.graph-canvas__control:focus-visible {
+  outline: 2px solid var(--graph-node-focused);
+  outline-offset: 1px;
+}
