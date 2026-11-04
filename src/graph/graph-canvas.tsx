@@ -24,6 +24,7 @@ import {
   type CanvasGraph,
 } from "./layout.ts";
 import { ScreenGrid } from "./screen-grid.ts";
+import { HighlightTransition, type HighlightStyle } from "./highlight-transition.ts";
 
 interface LabelHitArea {
   id: string;
@@ -207,24 +208,22 @@ function isGraphSurface(target: EventTarget | null): boolean {
 
 interface GraphPalette {
   accent: string;
+  node: string;
   foreground: string;
   muted: string;
   background: string;
   edge: string;
-  edgeDim: string;
-  edgeSelected: string;
   /** Resolved once with the colours so labels never re-read the stylesheet. */
   fontFamily: string;
 }
 
 const FALLBACK_PALETTE: GraphPalette = {
   accent: "#7048e8",
+  node: "#bfc3c9",
   foreground: "#0a0a0a",
   muted: "#737373",
   background: "#ffffff",
   edge: "rgba(115, 115, 115, 0.30)",
-  edgeDim: "rgba(115, 115, 115, 0.06)",
-  edgeSelected: "rgba(115, 115, 115, 0.62)",
   fontFamily: LABEL_FONT_FAMILY,
 };
 
@@ -266,12 +265,11 @@ function readPalette(element?: HTMLElement | null): GraphPalette {
   const line = token("--graph-line") || token("--line-strong") || "#737373";
   return {
     accent: token("--graph-accent") || FALLBACK_PALETTE.accent,
+    node: token("--graph-node") || FALLBACK_PALETTE.node,
     foreground: fg,
     muted,
     background: surface,
     edge: resolveColor(line, 0.3),
-    edgeDim: resolveColor(line, 0.06),
-    edgeSelected: resolveColor(line, 0.62),
     fontFamily: token("--graph-font-sans") || LABEL_FONT_FAMILY,
   };
 }
@@ -356,6 +354,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   /** The camera is owned by refs because gestures update it every frame. */
   const cameraRef = useRef<Camera>({ x: 0, y: 0, k: 1 });
+  const fitZoomRef = useRef(1);
   const paintRef = useRef<() => void>(() => {});
   const drawFrame = useRef(0);
   const simulationRef = useRef<Simulation<NodePoint, LinkPoint> | null>(null);
@@ -422,8 +421,8 @@ export function GraphCanvas<N = unknown, L = unknown>({
   const sizeRef = useRef({ width: 0, height: 0 });
   const hoveredIdRef = useRef<string | null>(null);
   const cursorRef = useRef("");
-  /** A fresh layout frames itself once its relaxation ends; drags leave the camera alone. */
-  const shouldFit = useRef(true);
+  /** Only the first layout may auto-fit on settling; explicit camera work cancels it. */
+  const initialFitPending = useRef(true);
   const reducedMotion = useReducedMotion();
   /** Media changes must not rebuild a settled simulation. */
   const reducedMotionRef = useRef(reducedMotion);
@@ -434,6 +433,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [palette, setPalette] = useState<GraphPalette>(FALLBACK_PALETTE);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const focusedId = hoveredId ?? selectedId;
   const [fontReady, setFontReady] = useState(false);
   const previousLayout = useRef<{ version: number; data: CanvasGraph } | null>(null);
   const graphData = useMemo(() => {
@@ -445,9 +445,13 @@ export function GraphCanvas<N = unknown, L = unknown>({
       layoutVersion,
       previous?.version === layoutVersion ? previous.data : undefined,
     );
-    previousLayout.current = { version: layoutVersion, data };
     return data;
   }, [nodes, links, settings, layoutVersion]);
+  useEffect(() => {
+    // Publish only the committed graph. Strict Mode may discard memo calculations;
+    // retaining one of those copies would rewind the next update to stale positions.
+    previousLayout.current = { version: layoutVersion, data: graphData };
+  }, [graphData, layoutVersion]);
   const nodeIndex = useMemo(
     () => new Map(graphData.nodes.map((node) => [node.id, node])),
     [graphData.nodes],
@@ -459,23 +463,6 @@ export function GraphCanvas<N = unknown, L = unknown>({
     if (current) drag.node = current;
     else dragNode.current = null;
   }, [nodeIndex]);
-  const parentHubs = useMemo(() => {
-    const parents = new Map<string, string[]>();
-    for (const link of graphData.links) {
-      // Label placement follows links from caller-designated hubs.
-      if (!nodeIndex.get(endpointId(link.source))?.hub) continue;
-      const source = endpointId(link.source);
-      const target = endpointId(link.target);
-      const list = parents.get(target) ?? [];
-      list.push(source);
-      parents.set(target, list);
-    }
-    return parents;
-  }, [graphData.links, nodeIndex]);
-
-  useEffect(() => {
-    shouldFit.current = true;
-  }, [layoutVersion]);
 
   const requestPaint = useCallback(() => {
     if (drawFrame.current) return;
@@ -719,7 +706,14 @@ export function GraphCanvas<N = unknown, L = unknown>({
   useEffect(() => {
     labelCache.current.clear();
     labelHitAreas.current = [];
-  }, [palette, nodes, settings.labels]);
+  }, [
+    palette,
+    nodes,
+    settings.labels.color,
+    settings.labels.fontSize,
+    settings.labels.hubFontSize,
+    settings.labels.fontFamily,
+  ]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -775,6 +769,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
       if (!isGraphSurface(event.target)) return;
       if (!settings.interaction.zoom) return;
       event.preventDefault();
+      initialFitPending.current = false;
       stopCameraAnimation();
 
       const rect = container.getBoundingClientRect();
@@ -866,6 +861,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
         ),
       );
       animateCameraTo((minX + maxX) / 2, (minY + maxY) / 2, k, duration);
+      fitZoomRef.current = k;
     },
     [animateCameraTo, clampZoom, settings.camera.fitPadding],
   );
@@ -948,6 +944,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
   fitSelectionRef.current = fitSelectionCamera;
   useEffect(() => {
     if (!selectedId || !autoFitSelection) return;
+    initialFitPending.current = false;
     fitSelectionRef.current(620);
   }, [autoFitSelection, selectedId]);
 
@@ -981,8 +978,8 @@ export function GraphCanvas<N = unknown, L = unknown>({
             simulation.alpha() < simulation.alphaMin())
         ) {
           // The layout is at rest; nothing more is scheduled.
-          if (shouldFit.current) {
-            shouldFit.current = false;
+          if (initialFitPending.current) {
+            initialFitPending.current = false;
             fitAll(0);
           }
           return;
@@ -1021,17 +1018,19 @@ export function GraphCanvas<N = unknown, L = unknown>({
     simulationRef.current = simulation;
     if (reducedMotionRef.current || (!graphData.layoutChanged && retainedAlpha.current === 0)) {
       simulation.alpha(0);
-      if (shouldFit.current) {
-        shouldFit.current = false;
+      if (initialFitPending.current) {
+        initialFitPending.current = false;
         fitAll(0);
       }
       requestPaint();
     } else {
-      // Frame the pre-settled spiral immediately so the first paint is not a
-      // cropped close-up; the settled layout is framed again when it comes to
-      // rest. A data refresh leaves the user's camera alone.
-      if (shouldFit.current) fitAll(0);
-      simulation.alpha(graphData.layoutChanged ? 1 : retainedAlpha.current);
+      // Only the initial graph frames itself automatically. Tuning and restarts
+      // preserve the camera, including gestures made while the solver is active.
+      if (initialFitPending.current) fitAll(0);
+      // Keep cooling/velocity through tuning instead of kicking every slider step
+      // back to the full-energy initial layout.
+      simulation.alpha(graphData.topologyChanged ? 1 : Math.max(retainedAlpha.current, 0.12));
+      requestPaint();
       runRelaxation("settle");
     }
     return () => {
@@ -1080,6 +1079,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
       // Paint measures in rounded CSS pixels, so hit testing must use the same
       // viewport instead of the fractional layout box.
       const { width, height } = sizeRef.current;
+      if (x < 0 || y < 0 || x > width || y > height) return null;
 
       for (const area of labelHitAreas.current) {
         if (x >= area.left && x <= area.right && y >= area.top && y <= area.bottom) {
@@ -1132,6 +1132,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
 
   /** Interrupt camera motion whenever a direct gesture starts. */
   function beginPointer(event: ReactPointerEvent<HTMLDivElement>) {
+    initialFitPending.current = false;
     stopWheelZoom();
     stopCameraAnimation();
     activePointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -1169,6 +1170,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
     // A pen drag already fixed a node; release that fix before the pinch owns
     // the gesture or the node would stay pinned.
     finishNodeDrag();
+    updateHovered(null);
   }
 
   function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
@@ -1220,6 +1222,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
           offsetY: node.y - point.y,
           active: false,
         };
+        updateHovered(node.id);
       }
     }
     setGraphCursor("grabbing");
@@ -1231,7 +1234,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
       tracked.x = event.clientX;
       tracked.y = event.clientY;
     }
-    if (!isGraphSurface(event.target)) {
+    if (!isGraphSurface(event.target) && dragNode.current?.pointerId !== event.pointerId) {
       updateHovered(null);
       setGraphCursor("");
       return;
@@ -1293,7 +1296,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
             drag.node.fy = drag.node.y;
             requestPaint();
           }
-          updateHovered(null);
+          updateHovered(drag.node.id);
           setGraphCursor("grabbing");
           return;
         }
@@ -1364,6 +1367,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
   }
 
   function handlePointerLeave() {
+    if (dragNode.current) return;
     updateHovered(null);
     setGraphCursor("");
   }
@@ -1372,6 +1376,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
     activePointers.current.delete(event.pointerId);
     pinch.current = null;
     finishNodeDrag();
+    updateHovered(null);
     pointerStart.current = null;
     setGraphCursor("");
   }
@@ -1398,50 +1403,105 @@ export function GraphCanvas<N = unknown, L = unknown>({
     };
   }, [finishNodeDrag, setGraphCursor, updateHovered]);
 
-  const nodeColor = useCallback(
-    (node: NodePoint) => node.color ?? palette.accent,
-    [palette.accent],
-  );
+  const focusNeighborhood = useMemo(() => {
+    if (focusedId === null) return null;
+    const ids = new Set([focusedId]);
+    for (const link of graphData.links) {
+      const source = endpointId(link.source);
+      const target = endpointId(link.target);
+      if (source === focusedId) ids.add(target);
+      if (target === focusedId) ids.add(source);
+    }
+    return ids;
+  }, [graphData.links, focusedId]);
+
+  const previousHighlight = useRef<HighlightTransition | null>(null);
+  const highlight = useMemo(() => {
+    const transition = new HighlightTransition(performance.now(), reducedMotion ? 0 : 240);
+    const previous = previousHighlight.current;
+    for (const node of graphData.nodes) {
+      const key = `node:${node.id}`;
+      const active = focusNeighborhood ? focusNeighborhood.has(node.id) : activeIds.has(node.id);
+      transition.add(
+        key,
+        {
+          opacity: active ? 1 : settings.nodes.dimOpacity,
+          highlight: focusNeighborhood?.has(node.id) ? 1 : 0,
+          accent: node.id === focusedId ? 1 : 0,
+          title: focusNeighborhood?.has(node.id) ? 1 : 0,
+          width: 0,
+          labelScale: node.id === focusedId ? FOCUS_LABEL_SCALE : 1,
+        },
+        previous?.entries.get(key),
+      );
+    }
+    for (const link of graphData.links) {
+      const key = `link:${link.id}`;
+      const source = endpointId(link.source);
+      const target = endpointId(link.target);
+      const incident = focusedId !== null && (source === focusedId || target === focusedId);
+      const active = focusedId !== null ? incident : activeIds.has(source) && activeIds.has(target);
+      transition.add(
+        key,
+        {
+          opacity: active ? 1 : settings.nodes.dimOpacity,
+          highlight: incident ? 1 : 0,
+          accent: incident ? 1 : 0,
+          title: 0,
+          width: link.width * (incident ? 1.6 : 1),
+          labelScale: 1,
+        },
+        previous?.entries.get(key),
+      );
+    }
+    return transition;
+  }, [
+    graphData,
+    focusNeighborhood,
+    focusedId,
+    activeIds,
+    settings.nodes.dimOpacity,
+    reducedMotion,
+  ]);
+  useEffect(() => {
+    previousHighlight.current = highlight;
+  }, [highlight]);
 
   const paintNode = useCallback(
     (ctx: CanvasRenderingContext2D, node: NodePoint) => {
       const x = node.x ?? 0;
       const y = node.y ?? 0;
-      const selected = node.id === selectedId;
-      const hovered = node.id === hoveredId;
-      const active = activeIds.has(node.id);
+      const visual = highlight.entries.get(`node:${node.id}`)!;
       const emphasis = emphasisIds.has(node.id);
-      const dim = !active;
-      const radius = node.radius + (hovered ? 0.8 : 0);
+      const radius = node.radius;
       const shape = node.shape;
-      const fill = nodeColor(node);
+      const fill = node.color ?? palette.node;
 
       ctx.save();
-      ctx.globalAlpha = dim ? settings.nodes.dimOpacity : 1;
-
-      // A selected or hovered node gets a soft halo; everything else stays flat
-      // so the map's colour encoding is never mistaken for emphasis.
-      if (selected || hovered) {
-        nodePath(ctx, x, y, radius + 8, shape);
-        ctx.fillStyle = palette.accent;
-        ctx.globalAlpha = dim ? 0.06 : 0.16;
-        ctx.fill();
-        ctx.globalAlpha = dim ? settings.nodes.dimOpacity : 1;
-      }
+      ctx.globalAlpha = visual.opacity;
 
       nodePath(ctx, x, y, radius, shape);
-      ctx.fillStyle = fill;
-      ctx.fill();
+      if (visual.highlight < 1) {
+        ctx.fillStyle = fill;
+        ctx.fill();
+      }
+      if (visual.highlight > 0 && visual.accent < 1) {
+        ctx.globalAlpha = visual.opacity * visual.highlight;
+        ctx.fillStyle = palette.foreground;
+        ctx.fill();
+      }
+      if (visual.accent > 0) {
+        ctx.globalAlpha = visual.opacity * visual.accent;
+        ctx.fillStyle = palette.accent;
+        ctx.fill();
+      }
+      ctx.globalAlpha = visual.opacity;
       ctx.lineWidth = 0.7;
       ctx.strokeStyle = palette.background;
       ctx.stroke();
 
-      if (selected || hovered) {
-        nodePath(ctx, x, y, radius + 4, shape);
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = selected ? palette.foreground : palette.muted;
-        ctx.stroke();
-      } else if (emphasis) {
+      ctx.globalAlpha *= 1 - visual.title;
+      if (emphasis) {
         nodePath(ctx, x, y, radius + 3.5, shape);
         ctx.lineWidth = 1.1;
         ctx.strokeStyle = palette.accent;
@@ -1450,37 +1510,29 @@ export function GraphCanvas<N = unknown, L = unknown>({
 
       ctx.restore();
     },
-    [activeIds, emphasisIds, hoveredId, nodeColor, palette, selectedId, settings.nodes.dimOpacity],
+    [emphasisIds, highlight, palette],
   );
 
   const nodeBatches = useMemo(() => {
-    const groups = new Map<string, { color: string; opacity: number; nodes: NodePoint[] }>();
+    const groups = new Map<string, { color: string; visual: HighlightStyle; nodes: NodePoint[] }>();
     const decorated: NodePoint[] = [];
     for (const node of graphData.nodes) {
-      if (node.id === selectedId || node.id === hoveredId || emphasisIds.has(node.id)) {
+      if (emphasisIds.has(node.id)) {
         decorated.push(node);
         continue;
       }
-      const color = node.color ?? palette.accent;
-      const opacity = activeIds.has(node.id) ? 1 : settings.nodes.dimOpacity;
-      const key = `${color}|${opacity}`;
+      const color = node.color ?? palette.node;
+      const visual = highlight.entries.get(`node:${node.id}`)!;
+      const key = `${color}|${visual.id}`;
       let group = groups.get(key);
       if (!group) {
-        group = { color, opacity, nodes: [] };
+        group = { color, visual, nodes: [] };
         groups.set(key, group);
       }
       group.nodes.push(node);
     }
     return { groups: [...groups.values()], decorated };
-  }, [
-    graphData.nodes,
-    selectedId,
-    hoveredId,
-    emphasisIds,
-    activeIds,
-    palette.accent,
-    settings.nodes.dimOpacity,
-  ]);
+  }, [graphData.nodes, emphasisIds, highlight, palette.node]);
 
   const labelLayout = useMemo(() => {
     const entries = graphData.nodes.map((node) => ({
@@ -1495,7 +1547,6 @@ export function GraphCanvas<N = unknown, L = unknown>({
     }));
     return {
       entries,
-      byId: new Map(entries.map((entry) => [entry.node.id, entry])),
       placed: new ScreenGrid(),
       hubs: new ScreenGrid(),
     };
@@ -1509,17 +1560,16 @@ export function GraphCanvas<N = unknown, L = unknown>({
   ]);
   const labelCandidates = useMemo(() => {
     const priority = (node: NodePoint) =>
-      node.id === selectedId || node.id === hoveredId
-        ? 3
-        : node.hub
-          ? 1.5
-          : node.degree > 2
-            ? 2
-            : 1;
+      node.id === focusedId ? 3 : node.hub ? 1.5 : node.degree > 2 ? 2 : 1;
     return labelLayout.entries
-      .filter(({ node }) => activeIds.has(node.id) || node.id === hoveredId)
+      .filter(
+        ({ node }) =>
+          activeIds.has(node.id) ||
+          focusNeighborhood?.has(node.id) ||
+          (highlight.entries.get(`node:${node.id}`)?.from.title ?? 0) > 0,
+      )
       .sort((a, b) => priority(b.node) - priority(a.node));
-  }, [labelLayout, activeIds, selectedId, hoveredId]);
+  }, [labelLayout, activeIds, focusedId, focusNeighborhood, highlight]);
 
   /**
    * Labels paint over the graph in screen space, so their size stays stable
@@ -1543,20 +1593,11 @@ export function GraphCanvas<N = unknown, L = unknown>({
       context.globalAlpha = 1;
 
       const zoom = camera.k;
-      // Labels describe detail, so they belong to closer zoom levels. Anchors
-      // stay named through the default overview (fit ≈ 0.8) and fade only when
-      // the whole map shrinks further; leaves need a closer view to appear.
-      const leafFade = smoothstep(
-        settings.labels.zoomThreshold,
-        settings.labels.zoomThreshold + settings.labels.fadeRange,
-        zoom,
-      );
-      const hubFade = smoothstep(
-        settings.labels.zoomThreshold * 0.5,
-        settings.labels.zoomThreshold * 0.5 + settings.labels.fadeRange,
-        zoom,
-      );
-      const { entries, byId: positions, placed, hubs } = labelLayout;
+      // All titles share one threshold. A fitted overview stays label-free;
+      // hover and explicit always-visible options are the only exceptions.
+      const threshold = Math.max(settings.labels.zoomThreshold, fitZoomRef.current * 1.15);
+      const labelFade = smoothstep(threshold, threshold + settings.labels.fadeRange, zoom);
+      const { entries, placed, hubs } = labelLayout;
       placed.reset(size.width, size.height);
       hubs.reset(size.width, size.height);
       for (const entry of entries) {
@@ -1587,65 +1628,29 @@ export function GraphCanvas<N = unknown, L = unknown>({
         if (!point.visible) continue;
         const { node } = point;
         const isHub = node.hub === true;
-        const selected = node.id === selectedId;
-        const hovered = node.id === hoveredId;
+        const visual = highlight.entries.get(`node:${node.id}`)!;
         const fade =
-          selected || hovered || showContextLabels || (labelHubsAlways && isHub)
-            ? 1
-            : isHub
-              ? hubFade
-              : leafFade;
+          Math.max(visual.title, showContextLabels || (labelHubsAlways && isHub) ? 1 : labelFade) *
+          visual.opacity;
         if (fade < 0.02) continue;
-        const fontSize = isHub ? settings.labels.hubFontSize : settings.labels.fontSize;
+        const baseFontSize = isHub ? settings.labels.hubFontSize : settings.labels.fontSize;
+        const fontSize = baseFontSize * visual.labelScale;
         if (point.textWidth < 0) {
-          context.font = `${isHub ? 500 : 400} ${fontSize}px ${settings.labels.fontFamily ?? palette.fontFamily}`;
+          context.font = `${isHub ? 500 : 400} ${baseFontSize}px ${settings.labels.fontFamily ?? palette.fontFamily}`;
           point.textWidth = context.measureText(node.label).width;
         }
-        const textWidth = point.textWidth;
+        const textWidth = point.textWidth * visual.labelScale;
         let labelX = point.x;
-        // Hubs carry the map's frame and are flanked by their own leaves, so
-        // their names sit further out than a leaf label would.
-        let labelY = point.y + node.radius * zoom + (isHub ? 22 : 12);
+        // Keep labels close; the current focus eases six pixels farther down
+        // so its larger title clears the pointer without moving neighbours.
+        let labelY =
+          point.y +
+          node.radius * zoom +
+          (Math.ceil(baseFontSize + 8) * visual.labelScale) / 2 +
+          3 +
+          6 * visual.accent;
 
-        if (!isHub) {
-          let centerX = 0;
-          let centerY = 0;
-          let count = 0;
-          for (const id of parentHubs.get(node.id) ?? EMPTY_PARENTS) {
-            const parent = positions.get(id);
-            if (!parent) continue;
-            centerX += parent.x;
-            centerY += parent.y;
-            count += 1;
-          }
-          let directionX = 1;
-          let directionY = 0;
-          if (count) {
-            const dx = point.x - centerX / count;
-            const dy = point.y - centerY / count;
-            const length = Math.hypot(dx, dy);
-            if (length > 1) {
-              directionX = dx / length;
-              directionY = dy / length;
-            }
-          }
-          // Wide labels are centered beneath the node instead of pushed out
-          // radially: a long sentence offset by half its own width otherwise
-          // reads as detached from the circle it describes.
-          if (textWidth > 96) {
-            labelX = point.x;
-            labelY = point.y + node.radius * zoom + 12;
-          } else {
-            const distance = node.radius * zoom + 7 + textWidth / 2;
-            labelX = point.x + directionX * distance;
-            labelY = point.y + directionY * distance;
-          }
-        }
-
-        // Hub names are the map's frame and sit beside their circle; a narrow
-        // inset let "News" and "Game dev" run into each other when hubs were
-        // close. Hub labels get a wider margin so they stay legible.
-        const inset = textWidth / 2 + (isHub ? 26 : 12);
+        const inset = textWidth / 2 + 4;
         const minX = inset;
         const maxX = size.width - inset;
         const maxY = size.height - (size.width < 640 ? 10 : 58);
@@ -1659,11 +1664,11 @@ export function GraphCanvas<N = unknown, L = unknown>({
         const top = labelY - fontSize / 2 - pad * 0.5;
         const bottom = labelY + fontSize / 2 + pad * 0.5;
 
-        if (!isHub && hubs.intersects(left, top, right, bottom)) continue;
+        if (!isHub && visual.title <= 0 && hubs.intersects(left, top, right, bottom)) continue;
         const collides = placed.intersects(left, top, right, bottom);
         // Hubs stay eligible at every zoom, but cannot overprint another name.
         // Suppressed names remain reachable through the caller's own list.
-        if (collides && !selected && !hovered) continue;
+        if (collides && visual.title <= 0) continue;
 
         if (fade >= 0.3) {
           const hit = point.hit;
@@ -1677,17 +1682,39 @@ export function GraphCanvas<N = unknown, L = unknown>({
         const bitmap = getLabelBitmap(
           node.label,
           isHub,
-          selected || hovered ? palette.foreground : (settings.labels.color ?? palette.muted),
+          visual.title >= 1 ? palette.foreground : (settings.labels.color ?? palette.muted),
           palette.background,
-          dpr,
+          dpr * FOCUS_LABEL_SCALE,
           settings.labels.fontFamily ?? palette.fontFamily,
-          fontSize,
-          textWidth,
+          baseFontSize,
+          point.textWidth,
         );
-        const drawX = Math.round((labelX - bitmap.width / 2) * dpr) / dpr;
-        const drawY = Math.round((labelY - bitmap.height / 2) * dpr) / dpr;
+        const drawWidth = bitmap.width * visual.labelScale;
+        const drawHeight = bitmap.height * visual.labelScale;
+        const drawX = Math.round((labelX - drawWidth / 2) * dpr) / dpr;
+        const drawY = Math.round((labelY - drawHeight / 2) * dpr) / dpr;
         context.globalAlpha = fade;
-        context.drawImage(bitmap.canvas, drawX, drawY, bitmap.width, bitmap.height);
+        context.drawImage(bitmap.canvas, drawX, drawY, drawWidth, drawHeight);
+        if (visual.title > 0 && visual.title < 1) {
+          const bright = getLabelBitmap(
+            node.label,
+            isHub,
+            palette.foreground,
+            palette.background,
+            dpr * FOCUS_LABEL_SCALE,
+            settings.labels.fontFamily ?? palette.fontFamily,
+            baseFontSize,
+            point.textWidth,
+          );
+          context.globalAlpha = fade * visual.title;
+          context.drawImage(
+            bright.canvas,
+            drawX,
+            drawY,
+            bright.width * visual.labelScale,
+            bright.height * visual.labelScale,
+          );
+        }
         context.globalAlpha = 1;
         const box = point.box;
         box.left = left;
@@ -1702,11 +1729,9 @@ export function GraphCanvas<N = unknown, L = unknown>({
       labelLayout,
       labelCandidates,
       getLabelBitmap,
-      hoveredId,
+      highlight,
       labelHubsAlways,
       palette,
-      parentHubs,
-      selectedId,
       showContextLabels,
       size.height,
       size.width,
@@ -1718,7 +1743,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
   const linkGroups = useMemo(() => {
     type Group = {
       color: string;
-      width: number;
+      visual: HighlightStyle;
       dash: boolean;
       segments: { source: NodePoint; target: NodePoint }[];
     };
@@ -1729,26 +1754,18 @@ export function GraphCanvas<N = unknown, L = unknown>({
       const source = nodeIndex.get(sourceId);
       const target = nodeIndex.get(targetId);
       if (!source || !target) continue;
-      const active = activeIds.has(sourceId) && activeIds.has(targetId);
-      const selected = selectedId !== null && (sourceId === selectedId || targetId === selectedId);
-      const color = link.color
-        ? resolveColor(link.color, active ? 1 : settings.nodes.dimOpacity)
-        : !active
-          ? palette.edgeDim
-          : selected
-            ? palette.edgeSelected
-            : palette.edge;
-      const width = link.width * (selected && active ? 1.4 : 1);
-      const key = `${color}|${width}|${link.dashed}`;
+      const color = link.color ?? palette.edge;
+      const visual = highlight.entries.get(`link:${link.id}`)!;
+      const key = `${color}|${visual.id}|${link.dashed}`;
       let group = groups.get(key);
       if (!group) {
-        group = { color, width, dash: link.dashed, segments: [] };
+        group = { color, visual, dash: link.dashed, segments: [] };
         groups.set(key, group);
       }
       group.segments.push({ source, target });
     }
     return [...groups.values()];
-  }, [activeIds, graphData.links, nodeIndex, palette, selectedId, settings.nodes.dimOpacity]);
+  }, [graphData.links, nodeIndex, palette, highlight]);
 
   /**
    * One frame: clear, draw links in the camera transform, draw nodes and the
@@ -1783,9 +1800,10 @@ export function GraphCanvas<N = unknown, L = unknown>({
     context.scale(camera.k, camera.k);
     context.translate(-camera.x, -camera.y);
 
+    const animatingHighlight = highlight.advance(performance.now());
     for (const group of linkGroups) {
       const path = new Path2D();
-      const margin = group.width / camera.k;
+      const margin = group.visual.width / camera.k;
       for (const { source, target } of group.segments) {
         if (typeof source.x !== "number" || typeof source.y !== "number") continue;
         if (typeof target.x !== "number" || typeof target.y !== "number") continue;
@@ -1799,10 +1817,18 @@ export function GraphCanvas<N = unknown, L = unknown>({
         path.moveTo(source.x, source.y);
         path.lineTo(target.x, target.y);
       }
-      context.strokeStyle = group.color;
-      context.lineWidth = group.width / camera.k;
+      context.lineWidth = group.visual.width / camera.k;
       context.setLineDash(group.dash ? DASHED_LINE : SOLID_LINE);
-      context.stroke(path);
+      if (group.visual.highlight < 1) {
+        context.globalAlpha = group.visual.opacity;
+        context.strokeStyle = group.color;
+        context.stroke(path);
+      }
+      if (group.visual.accent > 0) {
+        context.globalAlpha = group.visual.opacity * group.visual.accent;
+        context.strokeStyle = palette.accent;
+        context.stroke(path);
+      }
     }
     context.setLineDash(SOLID_LINE);
 
@@ -1825,9 +1851,22 @@ export function GraphCanvas<N = unknown, L = unknown>({
         visible = true;
       }
       if (!visible) continue;
-      context.globalAlpha = group.opacity;
-      context.fillStyle = group.color;
-      context.fill();
+      if (group.visual.highlight < 1) {
+        context.globalAlpha = group.visual.opacity;
+        context.fillStyle = group.color;
+        context.fill();
+      }
+      if (group.visual.highlight > 0 && group.visual.accent < 1) {
+        context.globalAlpha = group.visual.opacity * group.visual.highlight;
+        context.fillStyle = palette.foreground;
+        context.fill();
+      }
+      if (group.visual.accent > 0) {
+        context.globalAlpha = group.visual.opacity * group.visual.accent;
+        context.fillStyle = palette.accent;
+        context.fill();
+      }
+      context.globalAlpha = group.visual.opacity;
       context.stroke();
     }
     context.globalAlpha = 1;
@@ -1842,10 +1881,13 @@ export function GraphCanvas<N = unknown, L = unknown>({
     context.restore();
 
     drawLabels(context, camera, dpr);
+    if (animatingHighlight) requestPaint();
   }, [
     drawLabels,
     nodeBatches,
-    palette.background,
+    palette,
+    highlight,
+    requestPaint,
     linkGroups,
     paintNode,
     size.height,
@@ -1881,6 +1923,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
   }, [requestPaint]);
 
   function zoomBy(factor: number) {
+    initialFitPending.current = false;
     stopWheelZoom();
     stopCameraAnimation();
     const camera = cameraRef.current;
@@ -1888,6 +1931,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
   }
 
   function resetLayout() {
+    initialFitPending.current = false;
     stopWheelZoom();
     stopCameraAnimation();
     setLayoutVersion((version) => version + 1);
@@ -1945,7 +1989,10 @@ export function GraphCanvas<N = unknown, L = unknown>({
             className="graph-canvas__control"
             aria-label="Fit graph to view"
             title="Fit graph to view"
-            onClick={() => fitAll(reducedMotion ? 0 : 300)}
+            onClick={() => {
+              initialFitPending.current = false;
+              fitAll(reducedMotion ? 0 : 300);
+            }}
           >
             <ControlIcon name="fit" />
           </button>
@@ -2002,4 +2049,4 @@ function ControlIcon({ name }: { name: keyof typeof CONTROL_PATHS }) {
     </svg>
   );
 }
-const EMPTY_PARENTS: readonly string[] = [];
+const FOCUS_LABEL_SCALE = 1.25;

@@ -4,7 +4,7 @@
  *
  * Domain payloads — audience descriptions, media, degree and edge relations —
  * live in the typed `data` field. The engine never reads them; the demo turns
- * them into explicit shape, colour and width choices for the canvas.
+ * them into explicit size, shape and width choices for the canvas.
  */
 
 import type { GraphLink, GraphNode, NodeShape } from "../graph/index.ts";

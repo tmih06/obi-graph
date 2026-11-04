@@ -72,6 +72,8 @@ export interface CanvasGraph {
    * leaves the settled layout alone.
    */
   layoutChanged: boolean;
+  /** Structural changes need a full settle; tuning only needs gentle reheating. */
+  topologyChanged: boolean;
   /** Internal: the force inputs this graph was built with. */
   forceSignature: number[];
   /** The layout generation this graph was built for; a bump is a reset. */
@@ -333,6 +335,7 @@ export function makeGraphData<N = unknown, L = unknown>(
     // Initial, reset and topology changes reshape the graph; force changes
     // reheat it. A restyle leaves `layoutChanged` false.
     layoutChanged: delta.topology || delta.physics,
+    topologyChanged: delta.topology,
     forceSignature,
     layoutVersion,
   };

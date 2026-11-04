@@ -45,6 +45,7 @@ export interface GraphLabelsConfig {
   color: string;
   /** Font stack; absent means the stylesheet's `--graph-font-sans`. */
   fontFamily: string;
+  /** Minimum zoom for every title; Fit View also applies a shared overview floor. */
   zoomThreshold: number;
   fadeRange: number;
 }
@@ -144,9 +145,9 @@ export interface ResolvedGraphConfig<N = unknown, L = unknown> {
  */
 export const DEFAULT_GRAPH_CONFIG: ResolvedGraphConfig<any, any> = {
   physics: {
-    charge: -220,
+    charge: -600,
     chargeDistance: 650,
-    linkDistance: 90,
+    linkDistance: 200,
     linkStrength: 0.3,
     collisionPadding: 10,
     collisionStrength: 1,
@@ -161,7 +162,7 @@ export const DEFAULT_GRAPH_CONFIG: ResolvedGraphConfig<any, any> = {
     settleMs: 2_000,
   },
   nodes: {
-    radius: 5,
+    radius: 3.25,
     color: undefined,
     shape: "circle",
     charge: undefined,
@@ -182,7 +183,7 @@ export const DEFAULT_GRAPH_CONFIG: ResolvedGraphConfig<any, any> = {
     hubFontSize: 12,
     color: undefined,
     fontFamily: undefined,
-    zoomThreshold: 0.95,
+    zoomThreshold: 1.25,
     fadeRange: 0.3,
   },
   camera: {

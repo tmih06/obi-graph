@@ -14,6 +14,7 @@
   --graph-line: #737373;
 
   --graph-accent: #7048e8;
+  --graph-node: #bfc3c9;
 
   /* Chrome around the graph. */
   --graph-control-surface: rgb(255 255 255 / 0.9);

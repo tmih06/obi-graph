@@ -16,25 +16,9 @@ import {
 
 const THEME_KEY = "obi-graph-theme";
 
-/** The demo owns its colours: the engine no longer decodes a domain palette. */
-const PALETTE = {
-  light: { surface: "#ffffff", accent: "#7048e8", anchor: "#737373" },
-  dark: { surface: "#1b1c1f", accent: "#a78bfa", anchor: "#b3b3b3" },
-} as const;
-
 function initialTheme(): Theme {
   if (typeof document === "undefined") return "light";
   return document.documentElement.classList.contains("dark") ? "dark" : "light";
-}
-
-/** Blend two `#rrggbb` colours in sRGB; keeps the degree ramp tied to the theme. */
-function mixColor(from: string, to: string, amount: number): string {
-  const channels = (color: string) =>
-    [1, 3, 5].map((i) => Number.parseInt(color.slice(i, i + 2), 16));
-  const [r1, g1, b1] = channels(from);
-  const [r2, g2, b2] = channels(to);
-  const blend = (a: number, b: number) => Math.round(a + (b - a) * amount);
-  return `rgb(${blend(r1!, r2!)}, ${blend(g1!, g2!)}, ${blend(b1!, b2!)})`;
 }
 
 /**
@@ -104,12 +88,12 @@ function SliderField({ label, value, min, max, step, onChange, format }: SliderF
 export function DemoApp() {
   const { theme, toggle } = useTheme();
   const graph = useMemo(buildDemoGraph, []);
-  const [selectedId, setSelectedId] = useState<string | null>("pattern:3");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focusAudience, setFocusAudience] = useState<string | null>(null);
-  const [charge, setCharge] = useState(-220);
+  const [charge, setCharge] = useState(-600);
   const [linkStrength, setLinkStrength] = useState(0.3);
-  const [linkDistance, setLinkDistance] = useState(90);
-  const [nodeScale, setNodeScale] = useState(1);
+  const [linkDistance, setLinkDistance] = useState(200);
+  const [nodeScale, setNodeScale] = useState(0.65);
   const [showLabels, setShowLabels] = useState(true);
   const [showControls, setShowControls] = useState(true);
 
@@ -133,38 +117,25 @@ export function DemoApp() {
 
   const hubs = graph.nodes.filter((node) => node.hub);
 
-  /**
-   * Everything the old renderer decoded from domain fields is now an explicit
-   * choice here: media → outline, degree → fill ramp, hub → anchor grey.
-   */
+  /** Domain data chooses size/shape; the engine supplies the uniform neutral fill. */
   const config = useMemo<GraphConfig<DemoNodeData, DemoLinkData>>(() => {
-    const palette = PALETTE[theme];
     return {
-      physics: { charge, linkStrength },
+      physics: { charge, linkStrength, linkDistance },
       nodes: {
         radius: (node) => (node.data?.size ?? 5) * nodeScale,
         shape: (node) => shapeForMedia(node.data?.media),
-        color: (node) => {
-          if (node.hub) return palette.anchor;
-          const weight = Math.min(1, Math.max(0, ((node.data?.degree ?? 1) - 1) / 4));
-          return mixColor(palette.surface, palette.accent, 0.12 + weight * 0.88);
-        },
       },
       links: {
-        // A measured similarity reads as a dashed peer link and sits slightly
-        // closer than the solid stem into an audience hub.
         dashed: (link) => link.data?.relation === "similarity",
         width: (link) => (link.data?.relation === "similarity" ? 0.7 : 0.9),
-        distance: (link) =>
-          link.data?.relation === "similarity" ? linkDistance * 0.89 : linkDistance,
+        distance: linkDistance,
       },
       labels: {
         visible: showLabels,
-        hubLabelsAlways: true,
       },
       controls: showControls,
     };
-  }, [theme, charge, linkStrength, linkDistance, nodeScale, showLabels, showControls]);
+  }, [charge, linkStrength, linkDistance, nodeScale, showLabels, showControls]);
 
   return (
     <div className="demo">

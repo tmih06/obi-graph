@@ -167,7 +167,7 @@ body {
   height: 8px;
   flex: none;
   border-radius: 9999px;
-  background: var(--demo-accent);
+  background: #bfc3c9;
 }
 
 .demo__swatch[data-shape="square"] {

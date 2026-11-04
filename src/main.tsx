@@ -1,3 +1,4 @@
+import { Agentation } from "agentation";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { DemoApp } from "./demo/demo-app.tsx";
@@ -10,5 +11,6 @@ if (!container) throw new Error("Root element is missing from index.html");
 createRoot(container).render(
   <StrictMode>
     <DemoApp />
+    {import.meta.env.DEV && <Agentation appName="obi-graph" />}
   </StrictMode>,
 );
