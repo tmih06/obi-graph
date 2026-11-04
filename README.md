@@ -232,8 +232,9 @@ stays one connected tree at any density. The six animal classes hang off their
 real shared ancestry (class → clade → phylum → Animalia); those shared nodes are
 drawn neutral grey because they belong to no single class.
 
-Selecting a node opens a note panel: an overlay like Obsidian's, which never
-re-frames the graph. Notes are markdown composed from the same taxonomy, with
+Selecting a node opens an overlay note panel without resizing, scrolling, or
+re-framing the graph. Keyboard focus moves into the panel without scrolling.
+Notes are markdown composed from the same taxonomy, with
 `[[wiki-links]]` that jump between nodes. The markdown parser is loaded with a
 dynamic import only when the first note opens, and it is demo-only — the
 published library has no markdown dependency.

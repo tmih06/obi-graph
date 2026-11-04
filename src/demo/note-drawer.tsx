@@ -101,11 +101,11 @@ export function NoteDrawer({ nodeId, title, markdown, onNavigate, onClose }: Not
   const bodyRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
 
-  // Escape closes, and focus lands on the close button so the panel is usable
-  // from the keyboard without hunting for it.
+  // Focus must not scroll the graph's overflow container while the drawer is
+  // still translated off-screen at the start of its opening transition.
   useEffect(() => {
     if (!open) return;
-    closeRef.current?.focus();
+    closeRef.current?.focus({ preventScroll: true });
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.stopPropagation();
