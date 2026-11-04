@@ -378,8 +378,8 @@ export function GraphCanvas<N = unknown, L = unknown>({
     [providedActiveIds, nodes],
   );
   const sourceNodeIndex = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
-  const showContextLabels = settings.labels.alwaysVisible;
-  const labelHubsAlways = settings.labels.hubLabelsAlways;
+  const labelsAlwaysVisible = settings.labels.alwaysVisible;
+  const hubLabelsAlways = settings.labels.hubLabelsAlways;
   const autoFitSelection = settings.camera.autoFitSelection;
   const selectionBottomInset = settings.camera.selectionBottomInset;
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1736,8 +1736,10 @@ export function GraphCanvas<N = unknown, L = unknown>({
         const isHub = node.hub === true;
         const visual = highlight.nodeStyle(index);
         const fade =
-          Math.max(visual.title, showContextLabels || (labelHubsAlways && isHub) ? 1 : labelFade) *
-          visual.opacity;
+          Math.max(
+            visual.title,
+            labelsAlwaysVisible || (hubLabelsAlways && isHub) ? 1 : labelFade,
+          ) * visual.opacity;
         if (fade < 0.02) return;
         const baseFontSize = isHub ? settings.labels.hubFontSize : settings.labels.fontSize;
         const fontSize = baseFontSize * visual.labelScale;
@@ -1850,9 +1852,9 @@ export function GraphCanvas<N = unknown, L = unknown>({
       focusNeighborhood,
       getLabelBitmap,
       highlight,
-      labelHubsAlways,
+      hubLabelsAlways,
       palette,
-      showContextLabels,
+      labelsAlwaysVisible,
       size.height,
       size.width,
       settings.labels,
