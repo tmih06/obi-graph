@@ -63,6 +63,11 @@ export interface GraphInteractionConfig {
   pan: boolean;
   zoom: boolean;
   inertia: boolean;
+  /**
+   * Zoom below which hovering stops selecting nodes: the pointer stays neutral
+   * and nothing dims. Zero disables the threshold.
+   */
+  hoverMinZoom: number;
 }
 
 export interface GraphRenderingConfig {
@@ -198,6 +203,7 @@ export const DEFAULT_GRAPH_CONFIG: ResolvedGraphConfig<any, any> = {
     pan: true,
     zoom: true,
     inertia: true,
+    hoverMinZoom: 0,
   },
   rendering: {
     pixelRatio: undefined,

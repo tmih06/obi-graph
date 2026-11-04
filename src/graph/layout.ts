@@ -9,21 +9,23 @@
 
 import {
   forceCenter,
-  forceCollide,
   forceLink,
-  forceManyBody,
   forceSimulation,
   forceX,
   forceY,
   type ForceCenter,
-  type ForceCollide,
   type ForceLink,
-  type ForceManyBody,
   type ForceX,
   type ForceY,
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from "d3-force";
+import {
+  gridCollide,
+  gridManyBody,
+  type GridCollideForce,
+  type GridManyBodyForce,
+} from "./forces.ts";
 import type { GraphValue, ResolvedGraphConfig } from "./config.ts";
 import { endpointId, type GraphLink, type GraphNode, type NodeShape } from "./model.ts";
 
@@ -81,9 +83,9 @@ export interface CanvasGraph {
 }
 
 export interface LayoutForces {
-  charge: ForceManyBody<NodePoint>;
+  charge: GridManyBodyForce;
   link: ForceLink<NodePoint, LinkPoint>;
-  collide: ForceCollide<NodePoint>;
+  collide: GridCollideForce;
   x: ForceX<NodePoint>;
   y: ForceY<NodePoint>;
   center: ForceCenter<NodePoint>;
@@ -107,14 +109,17 @@ function optionalValue<T, V>(value: GraphValue<T, V> | undefined, item: T): V | 
 export function layoutForces(config: ResolvedGraphConfig<any, any>): LayoutForces {
   const physics = config.physics;
   return {
-    charge: forceManyBody<NodePoint>()
-      .strength((node) => node.charge)
+    // Grid forces, not d3's quadtree: at a few thousand nodes the quadtree
+    // rebuild dominates every tick and the layout cannot settle smoothly.
+    charge: gridManyBody()
+      .strength((node: NodePoint) => node.charge)
       .distanceMax(physics.chargeDistance),
     link: forceLink<NodePoint, LinkPoint>()
       .id((node) => node.id)
       .distance((link) => link.distance)
       .strength((link) => link.strength),
-    collide: forceCollide<NodePoint>((node) => node.radius + physics.collisionPadding)
+    collide: gridCollide()
+      .radius((node: NodePoint) => node.radius + physics.collisionPadding)
       .strength(physics.collisionStrength)
       .iterations(physics.collisionIterations),
     x: forceX<NodePoint>(0).strength(physics.centerStrength),

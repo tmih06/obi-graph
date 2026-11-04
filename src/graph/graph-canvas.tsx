@@ -27,6 +27,23 @@ import { ScreenGrid } from "./screen-grid.ts";
 import { HighlightTransition, type HighlightStyle } from "./highlight-transition.ts";
 import { GraphMetricsReporter, type GraphMetrics } from "./metrics.ts";
 
+/** One node's label placement state, reused across frames. */
+interface LabelEntry {
+  node: NodePoint;
+  /** Position of the node in the graph arrays, for style lookups. */
+  index: number;
+  x: number;
+  y: number;
+  visible: boolean;
+  textWidth: number;
+  box: { left: number; top: number; right: number; bottom: number };
+  hubBox: { left: number; top: number; right: number; bottom: number; radius: number };
+  hit: LabelHitArea;
+}
+
+/** Stable empty list, so the focused entry never has to be null-checked. */
+const EMPTY_LABEL_ENTRIES: readonly LabelEntry[] = [];
+
 interface LabelHitArea {
   id: string;
   left: number;
@@ -44,14 +61,6 @@ interface Camera {
   x: number;
   y: number;
   k: number;
-}
-
-/** Camera → screen mapping in CSS pixels, matching the d3-zoom transform. */
-function graphToScreen(camera: Camera, width: number, height: number, x: number, y: number) {
-  return {
-    x: (x - camera.x) * camera.k + width / 2,
-    y: (y - camera.y) * camera.k + height / 2,
-  };
 }
 
 function screenToGraph(camera: Camera, width: number, height: number, x: number, y: number) {
@@ -245,6 +254,25 @@ function resolveColor(color: string, alpha = 1): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha * (a / 255)})`;
 }
 
+/**
+ * Mix a paint color toward white. Hovered neighbours are "the same node, lit
+ * up"; using the foreground ink instead would paint them black on a light
+ * theme and white on a dark one, which reads as a different node.
+ */
+const lightenCache = new Map<string, string>();
+function lighten(color: string, amount = 0.45): string {
+  const key = `${color}|${amount}`;
+  const cached = lightenCache.get(key);
+  if (cached) return cached;
+  const match = /rgba?\(([^)]+)\)/.exec(resolveColor(color));
+  if (!match) return color;
+  const [r, g, b, a = "1"] = match[1]!.split(",").map((part) => part.trim());
+  const mix = (channel: string) => Math.round(Number(channel) + (255 - Number(channel)) * amount);
+  const next = `rgba(${mix(r!)}, ${mix(g!)}, ${mix(b!)}, ${a})`;
+  lightenCache.set(key, next);
+  return next;
+}
+
 function readPalette(element?: HTMLElement | null): GraphPalette {
   if (typeof document === "undefined" || !element) return FALLBACK_PALETTE;
   const styles = getComputedStyle(element);
@@ -376,6 +404,8 @@ export function GraphCanvas<N = unknown, L = unknown>({
     graphY: number;
   } | null>(null);
   const labelHitAreas = useRef<LabelHitArea[]>([]);
+  /** Scratch buffer for pointer hit testing: x, y, radius per node. */
+  const hitCoords = useRef(new Float64Array(0));
   const labelCache = useRef(new Map<string, LabelBitmap>());
   const labelCacheDpr = useRef(0);
   const pointerStart = useRef<{
@@ -1091,6 +1121,11 @@ export function GraphCanvas<N = unknown, L = unknown>({
       const { width, height } = sizeRef.current;
       if (x < 0 || y < 0 || x > width || y > height) return null;
 
+      // Below the threshold the pointer stays neutral: no hit anywhere, labels
+      // included, so nothing dims while the whole map is in view.
+      const hoverMinZoom = settingsRef.current.interaction.hoverMinZoom;
+      if (hoverMinZoom > 0 && cameraRef.current.k < hoverMinZoom) return null;
+
       for (const area of labelHitAreas.current) {
         if (x >= area.left && x <= area.right && y >= area.top && y <= area.bottom) {
           return area.id;
@@ -1098,19 +1133,36 @@ export function GraphCanvas<N = unknown, L = unknown>({
       }
 
       const camera = cameraRef.current;
-      let closest: string | null = null;
-      let closestDistance = Number.POSITIVE_INFINITY;
-      for (const node of graphData.nodes) {
-        if (typeof node.x !== "number" || typeof node.y !== "number") continue;
-        const point = graphToScreen(camera, width, height, node.x, node.y);
-        const radius = (node.radius ?? 5) * camera.k + (node.hub ? 14 : 11);
-        const distance = Math.hypot(x - point.x, y - point.y);
-        if (distance <= radius && distance < closestDistance) {
-          closest = node.id;
-          closestDistance = distance;
-        }
+      const nodes = graphData.nodes;
+      // Hit testing is pointer-rate, so it walks one contiguous coordinate
+      // scratch array instead of touching every node object.
+      if (hitCoords.current.length < nodes.length * 3) {
+        hitCoords.current = new Float64Array(nodes.length * 4);
       }
-      return closest;
+      const scratch = hitCoords.current;
+      const halfWidth = width / 2;
+      const halfHeight = height / 2;
+      for (let index = 0; index < nodes.length; index += 1) {
+        const node = nodes[index]!;
+        const gx = node.x ?? 0;
+        const gy = node.y ?? 0;
+        const radius = hitRadius(node.radius ?? 5, camera.k, node.hub);
+        scratch[index * 3] = (gx - camera.x) * camera.k + halfWidth;
+        scratch[index * 3 + 1] = (gy - camera.y) * camera.k + halfHeight;
+        scratch[index * 3 + 2] = radius;
+      }
+      let closest = -1;
+      let closestDistance = Number.POSITIVE_INFINITY;
+      for (let index = 0; index < nodes.length; index += 1) {
+        const dx = x - scratch[index * 3]!;
+        const dy = y - scratch[index * 3 + 1]!;
+        const radius = scratch[index * 3 + 2]!;
+        const distance2 = dx * dx + dy * dy;
+        if (distance2 > radius * radius || distance2 >= closestDistance) continue;
+        closest = index;
+        closestDistance = distance2;
+      }
+      return closest === -1 ? null : nodes[closest]!.id;
     },
     [graphData],
   );
@@ -1427,32 +1479,38 @@ export function GraphCanvas<N = unknown, L = unknown>({
 
   const previousHighlight = useRef<HighlightTransition | null>(null);
   const highlight = useMemo(() => {
-    const transition = new HighlightTransition(performance.now(), reducedMotion ? 0 : 240);
+    const transition = new HighlightTransition(
+      graphData.nodes.length,
+      graphData.links.length,
+      performance.now(),
+      reducedMotion ? 0 : 240,
+    );
     const previous = previousHighlight.current;
-    for (const node of graphData.nodes) {
-      const key = `node:${node.id}`;
+    for (let index = 0; index < graphData.nodes.length; index += 1) {
+      const node = graphData.nodes[index]!;
+      const focused = node.id === focusedId;
       const active = focusNeighborhood ? focusNeighborhood.has(node.id) : activeIds.has(node.id);
-      transition.add(
-        key,
+      transition.addNode(
+        index,
         {
           opacity: active ? 1 : settings.nodes.dimOpacity,
-          highlight: focusNeighborhood?.has(node.id) ? 1 : 0,
-          accent: node.id === focusedId ? 1 : 0,
-          title: focusNeighborhood?.has(node.id) ? 1 : 0,
+          highlight: active && focusNeighborhood !== null ? 1 : 0,
+          accent: focused ? 1 : 0,
+          title: active && focusNeighborhood !== null ? 1 : 0,
           width: 0,
-          labelScale: node.id === focusedId ? FOCUS_LABEL_SCALE : 1,
+          labelScale: focused ? FOCUS_LABEL_SCALE : 1,
         },
-        previous?.entries.get(key),
+        previous,
       );
     }
-    for (const link of graphData.links) {
-      const key = `link:${link.id}`;
+    for (let index = 0; index < graphData.links.length; index += 1) {
+      const link = graphData.links[index]!;
       const source = endpointId(link.source);
       const target = endpointId(link.target);
       const incident = focusedId !== null && (source === focusedId || target === focusedId);
       const active = focusedId !== null ? incident : activeIds.has(source) && activeIds.has(target);
-      transition.add(
-        key,
+      transition.addLink(
+        index,
         {
           opacity: active ? 1 : settings.nodes.dimOpacity,
           highlight: incident ? 1 : 0,
@@ -1461,7 +1519,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
           width: link.width * (incident ? 1.6 : 1),
           labelScale: 1,
         },
-        previous?.entries.get(key),
+        previous,
       );
     }
     return transition;
@@ -1478,10 +1536,10 @@ export function GraphCanvas<N = unknown, L = unknown>({
   }, [highlight]);
 
   const paintNode = useCallback(
-    (ctx: CanvasRenderingContext2D, node: NodePoint) => {
+    (ctx: CanvasRenderingContext2D, node: NodePoint, index: number) => {
       const x = node.x ?? 0;
       const y = node.y ?? 0;
-      const visual = highlight.entries.get(`node:${node.id}`)!;
+      const visual = highlight.nodeStyle(index);
       const emphasis = emphasisIds.has(node.id);
       const radius = node.radius;
       const shape = node.shape;
@@ -1497,7 +1555,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
       }
       if (visual.highlight > 0 && visual.accent < 1) {
         ctx.globalAlpha = visual.opacity * visual.highlight;
-        ctx.fillStyle = palette.foreground;
+        ctx.fillStyle = lighten(fill);
         ctx.fill();
       }
       if (visual.accent > 0) {
@@ -1523,30 +1581,43 @@ export function GraphCanvas<N = unknown, L = unknown>({
     [emphasisIds, highlight, palette],
   );
 
+  /** Nodes grouped by paint style; indices keep the per-frame lookup array-based. */
   const nodeBatches = useMemo(() => {
-    const groups = new Map<string, { color: string; visual: HighlightStyle; nodes: NodePoint[] }>();
-    const decorated: NodePoint[] = [];
-    for (const node of graphData.nodes) {
+    const groups = new Map<
+      string,
+      {
+        color: string;
+        highlightColor: string;
+        visual: HighlightStyle;
+        nodes: NodePoint[];
+        indices: number[];
+      }
+    >();
+    const decorated: { node: NodePoint; index: number }[] = [];
+    for (let index = 0; index < graphData.nodes.length; index += 1) {
+      const node = graphData.nodes[index]!;
       if (emphasisIds.has(node.id)) {
-        decorated.push(node);
+        decorated.push({ node, index });
         continue;
       }
       const color = node.color ?? palette.node;
-      const visual = highlight.entries.get(`node:${node.id}`)!;
+      const visual = highlight.nodeStyle(index);
       const key = `${color}|${visual.id}`;
       let group = groups.get(key);
       if (!group) {
-        group = { color, visual, nodes: [] };
+        group = { color, highlightColor: lighten(color), visual, nodes: [], indices: [] };
         groups.set(key, group);
       }
       group.nodes.push(node);
+      group.indices.push(index);
     }
     return { groups: [...groups.values()], decorated };
   }, [graphData.nodes, emphasisIds, highlight, palette.node]);
 
   const labelLayout = useMemo(() => {
-    const entries = graphData.nodes.map((node) => ({
+    const entries = graphData.nodes.map((node, index) => ({
       node,
+      index,
       x: 0,
       y: 0,
       visible: false,
@@ -1568,18 +1639,34 @@ export function GraphCanvas<N = unknown, L = unknown>({
     palette.fontFamily,
     fontReady,
   ]);
+  /**
+   * Labels are tried in a fixed priority order: hubs first, then well-connected
+   * nodes. Sorting once per data change instead of once per hover matters at a
+   * few thousand nodes, where a hover would otherwise re-sort every entry.
+   */
   const labelCandidates = useMemo(() => {
-    const priority = (node: NodePoint) =>
-      node.id === focusedId ? 3 : node.hub ? 1.5 : node.degree > 2 ? 2 : 1;
+    const priority = (node: NodePoint) => (node.hub ? 3 : node.degree > 2 ? 2 : 1);
     return labelLayout.entries
-      .filter(
-        ({ node }) =>
-          activeIds.has(node.id) ||
-          focusNeighborhood?.has(node.id) ||
-          (highlight.entries.get(`node:${node.id}`)?.from.title ?? 0) > 0,
-      )
+      .filter(({ node }) => activeIds.has(node.id))
       .sort((a, b) => priority(b.node) - priority(a.node));
-  }, [labelLayout, activeIds, focusedId, focusNeighborhood, highlight]);
+  }, [labelLayout, activeIds]);
+
+  /** The focused node and its neighbours keep their titles at any zoom. */
+  /**
+   * The focused node's title goes first so it always wins its own placement;
+   * its neighbours follow, still subject to collision, so a dense cluster does
+   * not stack a dozen names on top of the one the pointer is asking about.
+   */
+  const focusCandidates = useMemo(() => {
+    if (!focusNeighborhood) return EMPTY_LABEL_ENTRIES;
+    const focused: LabelEntry[] = [];
+    const neighbours: LabelEntry[] = [];
+    for (const entry of labelLayout.entries) {
+      if (!focusNeighborhood.has(entry.node.id)) continue;
+      (entry.node.id === focusedId ? focused : neighbours).push(entry);
+    }
+    return [...focused, ...neighbours];
+  }, [labelLayout, focusNeighborhood, focusedId]);
 
   /**
    * Labels paint over the graph in screen space, so their size stays stable
@@ -1610,6 +1697,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
       const { entries, placed, hubs } = labelLayout;
       placed.reset(size.width, size.height);
       hubs.reset(size.width, size.height);
+      // Cull once: off-screen labels and hubs never enter the placement pass.
       for (const entry of entries) {
         const { node } = entry;
         entry.visible = typeof node.x === "number" && typeof node.y === "number";
@@ -1634,23 +1722,30 @@ export function GraphCanvas<N = unknown, L = unknown>({
       }
       const hitAreas = labelHitAreas.current;
       hitAreas.length = 0;
-      for (const point of labelCandidates) {
-        if (!point.visible) continue;
-        const { node } = point;
+      const font = settings.labels.fontFamily ?? palette.fontFamily;
+      const measureContext = context;
+
+      /**
+       * Place one label. Returns nothing; a label that would collide with a
+       * placed one is skipped (the focused title is the exception, because it
+       * is what the pointer is asking about).
+       */
+      const place = (point: LabelEntry) => {
+        if (!point.visible) return;
+        const { node, index } = point;
         const isHub = node.hub === true;
-        const visual = highlight.entries.get(`node:${node.id}`)!;
+        const visual = highlight.nodeStyle(index);
         const fade =
           Math.max(visual.title, showContextLabels || (labelHubsAlways && isHub) ? 1 : labelFade) *
           visual.opacity;
-        if (fade < 0.02) continue;
+        if (fade < 0.02) return;
         const baseFontSize = isHub ? settings.labels.hubFontSize : settings.labels.fontSize;
         const fontSize = baseFontSize * visual.labelScale;
         if (point.textWidth < 0) {
-          context.font = `${isHub ? 500 : 400} ${baseFontSize}px ${settings.labels.fontFamily ?? palette.fontFamily}`;
-          point.textWidth = context.measureText(node.label).width;
+          measureContext.font = `${isHub ? 500 : 400} ${baseFontSize}px ${font}`;
+          point.textWidth = measureContext.measureText(node.label).width;
         }
         const textWidth = point.textWidth * visual.labelScale;
-        let labelX = point.x;
         // Keep labels close; the current focus eases six pixels farther down
         // so its larger title clears the pointer without moving neighbours.
         let labelY =
@@ -1664,8 +1759,8 @@ export function GraphCanvas<N = unknown, L = unknown>({
         const minX = inset;
         const maxX = size.width - inset;
         const maxY = size.height - (size.width < 640 ? 10 : 58);
-        if (minX > maxX) continue;
-        labelX = Math.min(Math.max(labelX, minX), maxX);
+        if (minX > maxX) return;
+        const labelX = Math.min(Math.max(point.x, minX), maxX);
         labelY = Math.min(Math.max(labelY, fontSize / 2 + 8), maxY);
 
         const pad = 3;
@@ -1674,11 +1769,13 @@ export function GraphCanvas<N = unknown, L = unknown>({
         const top = labelY - fontSize / 2 - pad * 0.5;
         const bottom = labelY + fontSize / 2 + pad * 0.5;
 
-        if (!isHub && visual.title <= 0 && hubs.intersects(left, top, right, bottom)) continue;
+        if (!isHub && visual.title <= 0 && hubs.intersects(left, top, right, bottom)) return;
         const collides = placed.intersects(left, top, right, bottom);
-        // Hubs stay eligible at every zoom, but cannot overprint another name.
-        // Suppressed names remain reachable through the caller's own list.
-        if (collides && visual.title <= 0) continue;
+        // Only the focused node's own title may overprint: it is what the
+        // pointer is asking about. A hovered node's neighbours still compete for
+        // space, or a dense cluster dumps a dozen overlapping names at once.
+        const focused = visual.accent > 0;
+        if (collides && !focused) return;
 
         if (fade >= 0.3) {
           const hit = point.hit;
@@ -1695,7 +1792,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
           visual.title >= 1 ? palette.foreground : (settings.labels.color ?? palette.muted),
           palette.background,
           dpr * FOCUS_LABEL_SCALE,
-          settings.labels.fontFamily ?? palette.fontFamily,
+          font,
           baseFontSize,
           point.textWidth,
         );
@@ -1712,7 +1809,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
             palette.foreground,
             palette.background,
             dpr * FOCUS_LABEL_SCALE,
-            settings.labels.fontFamily ?? palette.fontFamily,
+            font,
             baseFontSize,
             point.textWidth,
           );
@@ -1732,12 +1829,25 @@ export function GraphCanvas<N = unknown, L = unknown>({
         box.right = right;
         box.bottom = bottom;
         placed.insert(box);
+      };
+
+      // Focused titles are placed first so they win collisions, then the rest
+      // in their static priority order.
+      if (focusNeighborhood) {
+        for (const point of focusCandidates) place(point);
+        for (const point of labelCandidates) {
+          if (!focusNeighborhood.has(point.node.id)) place(point);
+        }
+      } else {
+        for (const point of labelCandidates) place(point);
       }
       context.restore();
     },
     [
       labelLayout,
       labelCandidates,
+      focusCandidates,
+      focusNeighborhood,
       getLabelBitmap,
       highlight,
       labelHubsAlways,
@@ -1758,14 +1868,15 @@ export function GraphCanvas<N = unknown, L = unknown>({
       segments: { source: NodePoint; target: NodePoint }[];
     };
     const groups = new Map<string, Group>();
-    for (const link of graphData.links) {
+    for (let index = 0; index < graphData.links.length; index += 1) {
+      const link = graphData.links[index]!;
       const sourceId = endpointId(link.source);
       const targetId = endpointId(link.target);
       const source = nodeIndex.get(sourceId);
       const target = nodeIndex.get(targetId);
       if (!source || !target) continue;
       const color = link.color ?? palette.edge;
-      const visual = highlight.entries.get(`link:${link.id}`)!;
+      const visual = highlight.linkStyle(index);
       const key = `${color}|${visual.id}|${link.dashed}`;
       let group = groups.get(key);
       if (!group) {
@@ -1850,7 +1961,9 @@ export function GraphCanvas<N = unknown, L = unknown>({
       for (const group of nodeBatches.groups) {
         context.beginPath();
         let visible = false;
-        for (const node of group.nodes) {
+        const batchNodes = group.nodes;
+        for (let slot = 0; slot < batchNodes.length; slot += 1) {
+          const node = batchNodes[slot]!;
           const x = node.x ?? 0;
           const y = node.y ?? 0;
           if (
@@ -1860,7 +1973,13 @@ export function GraphCanvas<N = unknown, L = unknown>({
             y - node.radius > bottom
           )
             continue;
-          nodePath(context, x, y, node.radius, node.shape, false);
+          // Sub-pixel dots are the bulk of a zoomed-out view: build `rect` for
+          // them instead of an arc plus a per-node path segment.
+          if (node.radius * camera.k < 0.8) {
+            context.rect(x - node.radius, y - node.radius, node.radius * 2, node.radius * 2);
+          } else {
+            nodePath(context, x, y, node.radius, node.shape, false);
+          }
           visible = true;
         }
         if (!visible) continue;
@@ -1871,7 +1990,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
         }
         if (group.visual.highlight > 0 && group.visual.accent < 1) {
           context.globalAlpha = group.visual.opacity * group.visual.highlight;
-          context.fillStyle = palette.foreground;
+          context.fillStyle = group.highlightColor;
           context.fill();
         }
         if (group.visual.accent > 0) {
@@ -1883,13 +2002,13 @@ export function GraphCanvas<N = unknown, L = unknown>({
         context.stroke();
       }
       context.globalAlpha = 1;
-      for (const node of nodeBatches.decorated) {
+      for (const { node, index } of nodeBatches.decorated) {
         const x = node.x ?? 0;
         const y = node.y ?? 0;
         const radius = node.radius + 9;
         if (x + radius < left || x - radius > right || y + radius < top || y - radius > bottom)
           continue;
-        paintNode(context, node);
+        paintNode(context, node, index);
       }
       context.restore();
 
@@ -2104,3 +2223,33 @@ function ControlIcon({ name }: { name: keyof typeof CONTROL_PATHS }) {
   );
 }
 const FOCUS_LABEL_SCALE = 1.25;
+
+/**
+ * Pointer forgiveness around a node, in CSS pixels, as a multiple of its
+ * painted radius. A zoomed-out dot is a fraction of a pixel wide, so a fixed
+ * pad (the previous 11px) turned every node into a screen-sized target: in the
+ * 3,000-node demo that put 30% of the viewport inside some node's hit area and
+ * the pointer was permanently "hovering", dimming the map. Scaling the pad
+ * with the node keeps small dots hard to hit and large circles easy, and the
+ * floor keeps the smallest dot reachable at all.
+ */
+const HIT_PADDING_RATIO = 1.8;
+const HIT_PADDING_MIN = 2.5;
+const HIT_PADDING_MAX = 10;
+
+/**
+ * Smallest painted radius a node needs before it can be hovered. Below this a
+ * node is an indistinguishable speck: focusing it dims everything around it
+ * while the user cannot tell which dot they hit. Zooming in is how to interact
+ * with those. Labels stay hoverable because they are visible.
+ */
+const HIT_MIN_PAINTED = 1.1;
+
+/** Screen-space hit radius for a node of `radius` graph units at `zoom`. */
+function hitRadius(radius: number, zoom: number, hub: boolean): number {
+  const painted = radius * zoom;
+  // A hub carries a chip and a title, so it stays a target at any zoom.
+  if (!hub && painted < HIT_MIN_PAINTED) return 0;
+  const padding = Math.min(HIT_PADDING_MAX, Math.max(HIT_PADDING_MIN, painted * HIT_PADDING_RATIO));
+  return painted + (hub ? padding * 1.4 : padding);
+}
