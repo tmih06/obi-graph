@@ -29,7 +29,7 @@ export default defineConfig({
     // frame before the graph data finishes downloading.
     rolldownOptions: {
       output: {
-        advancedChunks: {
+        codeSplitting: {
           groups: [{ name: "animal-data", test: /src\/demo\/animal-data\.ts/ }],
         },
       },

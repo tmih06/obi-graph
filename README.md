@@ -177,11 +177,23 @@ The demo is a real animal taxonomy: 1,420 species and 2,165 higher taxa sampled 
 
 Data is generated once by `bun scripts/fetch-taxonomy.ts` and committed as `src/demo/animal-data.ts`, so the demo runs offline. Bottom-left **Playground** exposes live force, size, label and theme controls; bottom-right shows the node count.
 
-### Hosting on GitHub Pages
+### Hosting on Cloudflare Pages
 
-`.github/workflows/pages.yml` builds and publishes `demo-dist` on every push to `main`, with `BASE_PATH` set from the repository name so a project site resolves under `/<repo>/`. Enable it under **Settings → Pages → Source: GitHub Actions**. For a user site or a custom domain, set `BASE_PATH=/`.
+The demo is a static site in `demo-dist`, served from the domain root, so no base
+path is needed. Point Cloudflare Pages at the repository with:
 
-Transfer budget on a static host (gzip, measured on the built artifact):
+| Setting                | Value                |
+| ---------------------- | -------------------- |
+| Build command          | `bun run build:demo` |
+| Build output directory | `demo-dist`          |
+| Environment variable   | `BUN_VERSION=1.4.4`  |
+
+`wrangler.toml` pins the same output directory for direct `wrangler pages deploy`
+uploads. Cloudflare serves Brotli/gzip and immutable cache headers for the hashed
+assets; `public/_headers` sets a long cache for `/assets/*` and revalidates
+`index.html`.
+
+Transfer budget (gzip, measured on the built artifact):
 
 | Asset               | Size        |
 | ------------------- | ----------- |

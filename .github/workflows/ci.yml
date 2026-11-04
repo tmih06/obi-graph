@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push supersedes an older run on the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # One toolchain version for every job and runner.
+  BUN_VERSION: 1.4.4
+
+jobs:
+  verify:
+    name: Format, lint, types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      # Separate steps so a failure names the gate that broke.
+      - name: Formatting
+        run: bun run check:fmt
+
+      - name: Lint
+        run: bun run check:lint
+
+      - name: Typecheck
+        run: bun run typecheck
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun run test --coverage
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      # The library and the demo are separate artifacts, and consumers install
+      # the library, so both must build.
+      - name: Build library
+        run: bun run build:lib
+
+      - name: Build demo
+        run: bun run build:demo
+
+      # The published package must actually export what package.json promises.
+      - name: Check package exports resolve
+        run: |
+          node --input-type=module -e '
+            import { readFileSync, existsSync } from "node:fs";
+            const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+            const paths = Object.entries(pkg.exports).flatMap(([name, entry]) =>
+              Object.values(entry).map((file) => [name, file]),
+            );
+            const missing = paths.filter(([, file]) => !existsSync(file));
+            if (missing.length) {
+              console.error("Missing export targets:");
+              for (const [name, file] of missing) console.error(`  ${name} -> ${file}`);
+              process.exit(1);
+            }
+            console.log(`All ${paths.length} export targets exist.`);
+          '
+
+      # Declarations must expose the public API, not just compile.
+      - name: Check declarations
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const source = readFileSync("dist/index.d.ts", "utf8");
+            const required = ["GraphCanvas", "GraphConfig", "GraphNode", "GraphLink", "GraphMetrics"];
+            const missing = required.filter((name) => !source.includes(name));
+            if (missing.length) {
+              console.error(`dist/index.d.ts is missing: ${missing.join(", ")}`);
+              process.exit(1);
+            }
+            console.log("Public declarations present.");
+          '
+
+      # A static host needs root-relative asset URLs and the header rules.
+      - name: Check demo is deployable
+        run: |
+          node --input-type=module -e '
+            import { readFileSync, existsSync } from "node:fs";
+            const html = readFileSync("demo-dist/index.html", "utf8");
+            if (!html.includes("src=\"/assets/")) {
+              console.error("index.html does not reference /assets/ from the site root");
+              process.exit(1);
+            }
+            if (html.includes("\"/obi-graph/")) {
+              console.error("index.html was built with a project base path");
+              process.exit(1);
+            }
+            if (!existsSync("demo-dist/_headers")) {
+              console.error("demo-dist/_headers is missing (cache rules not deployed)");
+              process.exit(1);
+            }
+            console.log("Demo is deployable from a domain root.");
+          '
+
+      # A demo build that silently loses its data would still "succeed".
+      - name: Check demo payload shipped
+        run: |
+          node --input-type=module -e '
+            import { readdirSync, statSync } from "node:fs";
+            const files = readdirSync("demo-dist/assets");
+            const data = files.find((name) => name.startsWith("animal-data-") && name.endsWith(".js"));
+            if (!data) {
+              console.error("demo-dist has no animal-data chunk");
+              process.exit(1);
+            }
+            const bytes = statSync(`demo-dist/assets/${data}`).size;
+            if (bytes < 50_000) {
+              console.error(`animal-data chunk looks truncated (${bytes} bytes)`);
+              process.exit(1);
+            }
+            console.log(`animal-data chunk: ${(bytes / 1024).toFixed(0)} KB`);
+          '

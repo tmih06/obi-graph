@@ -1,0 +1,11 @@
+# Cloudflare Pages configuration for the demo site.
+#
+# The demo is a static build with no Worker, so this file only pins where the
+# artifact lives. Cloudflare Pages can also be configured entirely in the
+# dashboard (build command `bun run build:demo`, output `demo-dist`); this file
+# keeps `wrangler pages deploy` in sync with that setup.
+
+name = "obi-graph"
+pages_build_output_dir = "demo-dist"
+
+compatibility_date = "2026-01-01"

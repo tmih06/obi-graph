@@ -32,7 +32,12 @@
     "check": "vp check",
     "fmt": "vp fmt",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "ci": "bun run check:ci && bun run test && bun run build",
+    "check:ci": "bun run check:fmt && bun run check:lint && bun run typecheck",
+    "check:fmt": "vp fmt --check",
+    "check:lint": "vp lint --deny-warnings",
+    "test:coverage": "bun test --coverage"
   },
   "dependencies": {
     "d3-force": "^3.0.0"
