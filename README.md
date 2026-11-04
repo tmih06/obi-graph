@@ -1,10 +1,8 @@
 # obi-graph
 
-A small React canvas renderer for interactive force-directed node graphs. Smooth pointer-anchored zoom, inertial pan, node dragging, selection, and collision-aware screen-space labels. Inspired by the feel of Obsidian's graph; not its renderer or an Obsidian dependency.
+A canvas graph renderer for React. Force-directed layout, smooth pointer zoom and pan, node dragging, selection, and collision-aware labels. It draws thousands of nodes in a single `<canvas>` — no per-node DOM, no SVG layer, no render loop when the graph is idle.
 
-React 18+ is a peer dependency. The only runtime dependency is `d3-force`; drawing and gestures use native browser APIs. No per-node DOM, icon library, SVG graph layer, or perpetual render loop.
-
-## Install and render
+The only runtime dependency is `d3-force`; React 18+ is a peer dependency.
 
 ```sh
 npm install obi-graph react
@@ -16,12 +14,12 @@ import { GraphCanvas } from "obi-graph";
 import "obi-graph/styles.css";
 
 const nodes = [
-  { id: "notes", label: "Notes", radius: 10, color: "#8b5cf6" },
-  { id: "ideas", label: "Ideas", shape: "diamond" as const },
+  { id: "cat", label: "Cat", radius: 8 },
+  { id: "lion", label: "Lion", radius: 5 },
 ];
-const links = [{ source: "notes", target: "ideas", strength: 0.6 }];
+const links = [{ source: "cat", target: "lion", strength: 0.5 }];
 
-export function Map() {
+export function Taxa() {
   return (
     <div style={{ position: "relative", height: 500 }}>
       <GraphCanvas nodes={nodes} links={links} />
@@ -30,158 +28,126 @@ export function Map() {
 }
 ```
 
-The graph fills its parent; give that parent a size and positioning context. Import the stylesheet once. Next.js App Router callers should put their graph wrapper in a `"use client"` module. Package imports and server-side rendering are safe; actual drawing starts after browser mount.
+The canvas fills its parent, so give the parent a height. Import the stylesheet once. In the Next.js App Router, put the wrapper in a `"use client"` module — package imports and SSR are safe, drawing starts after mount.
 
-The repository builds a publishable ESM package; it does not publish automatically. Before registry publication, choose a license and ensure ownership/availability of the `obi-graph` package name. A local packed tarball can be installed before publication (see below).
+## Data
 
-## Your data, your visual properties
-
-Only a node's string `id` and a link's string `source` / `target` are required. Put arbitrary application payloads in typed `data`; the engine does not interpret them.
+Only `id`, `source` and `target` are required. Put your own payload in `data`; the renderer never reads it.
 
 ```tsx
-import { useMemo } from "react";
-import { GraphCanvas, type GraphConfig, type GraphNode, type GraphLink } from "obi-graph";
+import { GraphCanvas, type GraphConfig, type GraphLink, type GraphNode } from "obi-graph";
 
-type Note = { title: string; importance: number; category: "note" | "tag" };
-type Relationship = { weight: number };
+type Species = { rank: "genus" | "species"; wikipediaLinks: number };
 
-const nodes: GraphNode<Note>[] = [
-  { id: "one", label: "One", data: { title: "First note", importance: 3, category: "note" } },
-  { id: "two", label: "Two", data: { title: "Second note", importance: 1, category: "tag" } },
+const nodes: GraphNode<Species>[] = [
+  { id: "Panthera", label: "Panthera", data: { rank: "genus", wikipediaLinks: 0 } },
+  { id: "lion", label: "Panthera leo", data: { rank: "species", wikipediaLinks: 274 } },
 ];
-const links: GraphLink<Relationship>[] = [{ source: "one", target: "two", data: { weight: 0.8 } }];
+const links: GraphLink[] = [{ source: "lion", target: "Panthera" }];
 
-export function NotesGraph() {
-  const config = useMemo<GraphConfig<Note, Relationship>>(
-    () => ({
-      nodes: {
-        radius: (node) => 4 + (node.data?.importance ?? 1) * 2,
-        color: (node) => (node.data?.category === "tag" ? "#10b981" : "#8b5cf6"),
-        shape: (node) => (node.data?.category === "tag" ? "diamond" : "circle"),
-        charge: (node) => -100 * (node.data?.importance ?? 1),
-      },
-      links: {
-        strength: (link) => link.data?.weight ?? 0.3,
-        distance: 100,
-        width: 1,
-      },
-      physics: { collisionPadding: 8, velocityDecay: 0.5 },
-      labels: { alwaysVisible: true },
-      camera: { autoFitSelection: false },
-    }),
-    [],
-  );
+const config: GraphConfig<Species> = {
+  nodes: {
+    radius: (node) => (node.data?.rank === "genus" ? 6 : 3),
+    color: (node) => (node.data?.rank === "genus" ? "#8b5cf6" : "#94a3b8"),
+  },
+  physics: { charge: -120, linkDistance: 60 },
+};
 
+export function Taxonomy() {
   return (
-    <div style={{ position: "relative", height: 500 }}>
-      <GraphCanvas
-        nodes={nodes}
-        links={links}
-        config={config}
-        onSelect={(id, node) => console.log(id, node?.data?.title)}
-      />
+    <div style={{ position: "relative", height: 600 }}>
+      <GraphCanvas nodes={nodes} links={links} config={config} />
     </div>
   );
 }
 ```
 
-**Precedence:** per-item property → configured value/accessor → default. Accessors receive your original objects and run when data/configuration changes, not on animation frames. A node's explicit `radius` therefore overrides `config.nodes.radius`, even if the latter is a function.
+Precedence is per-item property → configured value/accessor → default. Accessors run when data or config changes, never per frame, and receive your original objects. Update arrays immutably; the renderer copies layout fields, so your objects are never mutated.
 
-Use immutable updates: replace changed arrays/configuration rather than mutating them in place. Memoize stable data and configuration to avoid unnecessary normalization. The engine copies layout fields and never lets d3 mutate caller nodes or links; payloads are retained by reference, not deep-copied.
+**Node fields:** `id`, `label`, `data`, `radius`, `color`, `shape` (`circle` | `square` | `triangle` | `diamond` | `pentagon`), `charge`, `x`, `y`, `fx`/`fy` (pin an axis; `null` releases it), `hub` (label anchor).
 
-### Node fields
+**Link fields:** `source`, `target`, `id`, `data`, `color`, `width`, `dashed`, `distance`, `strength`.
 
-| Field      | Meaning                                                                          |
-| ---------- | -------------------------------------------------------------------------------- |
-| `id`       | Required, unique non-empty string.                                               |
-| `label`    | Display name; defaults to `id`.                                                  |
-| `data`     | Your typed application payload.                                                  |
-| `radius`   | Radius in graph units; default 3.25 (65% of the original size).                  |
-| `color`    | Canvas-compatible CSS color, e.g. hex/rgb/hsl.                                   |
-| `shape`    | `circle`, `square`, `triangle`, `diamond`, or `pentagon`.                        |
-| `charge`   | Many-body strength; negative repels, positive attracts.                          |
-| `x`, `y`   | Initial coordinates; changing an explicit coordinate repositions the node.       |
-| `fx`, `fy` | Pin either axis. Set to `null` or remove a prior model pin to release it.        |
-| `hub`      | Label anchor: chip background and hub-label behavior. Does **not** pin the node. |
-
-Coordinates remain stable across data refreshes. Unchanged explicit seeds do not reset settled positions. Dragging a free node releases it back into the simulation; dragging a pinned node restores the caller's pin on release.
-
-### Link fields
-
-| Field                      | Meaning                                                                                              |
-| -------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `source`, `target`         | Required node ids.                                                                                   |
-| `id`                       | Optional unique non-empty id; generated from endpoints if omitted. Parallel links need explicit ids. |
-| `data`                     | Your typed relationship payload.                                                                     |
-| `color`, `width`, `dashed` | Stroke color, width in CSS pixels, dashed/solid.                                                     |
-| `distance`, `strength`     | Rest length in graph units and spring strength.                                                      |
-
-Duplicate ids and missing endpoints throw descriptive errors. Links are drawn as straight, undirected strokes; applications decide relationship semantics. Color values are actual Canvas CSS colors, not unresolved `var(...)` expressions.
+Duplicate ids and unknown endpoints throw descriptive errors.
 
 ## Configuration
 
-Every group and field in `GraphConfig<NodeData, LinkData>` is optional. Values should be finite and in the documented range. `nodes.radius/color/shape/charge` and `links.color/width/dashed/distance/strength` accept either a constant or an accessor function.
+Every field of `GraphConfig<NodeData, LinkData>` is optional. Node and link appearance settings accept a constant or an accessor function.
 
-| Group         | Settings and defaults                                                                                                                                                         |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `physics`     | `charge: -600`, `chargeDistance: 650`, `linkDistance: 200`, `linkStrength: 0.3`                                                                                               |
-|               | `collisionPadding: 10`, `collisionStrength: 1`, `collisionIterations: 3`, `centerStrength: 0.025`                                                                             |
-|               | `alphaDecay: 0.035`, `velocityDecay: 0.5`, `warmupTicks: 0`, `settleTicks: 100`, `settleMs: 2000`                                                                             |
-| `nodes`       | `radius: 3.25`, `shape: "circle"`, `dimOpacity: 0.16`; uniform neutral-grey theme fill (`#bfc3c9`); charge falls back to `physics.charge`                                     |
-| `links`       | `width: 0.9`, `dashed: false`; theme color; distance/strength fall back to `physics.linkDistance/linkStrength`                                                                |
-| `labels`      | `visible: true`, `alwaysVisible: false`, `hubLabelsAlways: false`, `fontSize: 11`, `hubFontSize: 12`, `zoomThreshold: 1.25`, `fadeRange: 0.3`; theme `color` and `fontFamily` |
-| `camera`      | `minZoom: 0.04`, `maxZoom: 8`, `fitPadding: 92`, `autoFitSelection: true`, `selectionBottomInset: 0`                                                                          |
-| `interaction` | `dragNodes: true`, `pan: true`, `zoom: true`, `inertia: true`                                                                                                                 |
-| `rendering`   | `pixelRatio`: device DPR unless explicitly set to a positive number                                                                                                           |
-| `controls`    | `true`; set `false` to hide the built-in toolbar                                                                                                                              |
+| Group         | Defaults                                                                                                                                                                                                                             |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `physics`     | `charge: -600`, `chargeDistance: 650`, `linkDistance: 200`, `linkStrength: 0.3`, `collisionPadding: 10`, `collisionIterations: 3`, `alphaDecay: 0.035`, `velocityDecay: 0.5`, `settleTicks: 100`, `settleMs: 2000`, `warmupTicks: 0` |
+| `nodes`       | `radius: 3.25`, `shape: "circle"`, `dimOpacity: 0.16`                                                                                                                                                                                |
+| `links`       | `width: 0.9`, `dashed: false`; colour and distance/strength fall back to the theme and `physics`                                                                                                                                     |
+| `labels`      | `visible: true`, `alwaysVisible: false`, `fontSize: 11`, `zoomThreshold: 1.25`, `fadeRange: 0.3`                                                                                                                                     |
+| `camera`      | `minZoom: 0.04`, `maxZoom: 8`, `fitPadding: 92`, `autoFitSelection: true`                                                                                                                                                            |
+| `interaction` | `dragNodes`, `pan`, `zoom`, `inertia` all `true`; `hoverMinZoom: 0` (disabled)                                                                                                                                                       |
+| `rendering`   | `pixelRatio`: device DPR unless set                                                                                                                                                                                                  |
+| `controls`    | `true` — the built-in toolbar                                                                                                                                                                                                        |
 
-All node titles use the same zoom fade, including hubs. The effective threshold is the larger of `zoomThreshold` and 1.15 times the most recent Fit View zoom, so the fitted overview hides normal titles. Zooming closer reveals them uniformly. Hover or selection reveals the focused title and directly connected titles even at Fit View. Explicit `alwaysVisible` / `hubLabelsAlways` opt out of this fading.
+Physics, topology, radius and pin changes keep live positions and gently reheat the solver; label, colour, width and dash changes repaint without touching a settled layout. Fit View frames the graph, Reset Layout reseeds it.
 
-Strengths, decay factors, opacity and damping use 0–1. Distances/radii/padding are non-negative; zoom bounds and pixel ratio are positive with `minZoom <= maxZoom`. Tick counts are non-negative integers. Font sizes and `fadeRange` are positive. `settleMs` is a non-negative upper time bound.
+## Large graphs
 
-`centerStrength` adjusts the weak x/y pull toward the origin; the layout also recenters the graph. Increasing `velocityDecay` damps motion faster. `warmupTicks` is an optional synchronous pre-solve: leave it at zero for fast first paint. Live relaxation stops at the tick/time limit or when the solver cools. Reduced-motion preferences suppress animated settling, inertia and camera tweens; explicit warmup is still honored.
+The demo renders 3,585 nodes and 3,584 links at 60 fps while hovering and about 40 fps during a node drag (physics + repaint each frame). Two engine choices matter when you go that far:
 
-Physics/topology/radius/pin changes preserve live positions and velocities. Force tuning gently reheats the solver instead of restarting at full energy; slider updates do not rewind the graph, reset the camera, or discard unchanged label bitmaps. Label, color, width, and dash changes repaint without reheating a settled layout. Restart Layout reseeds free nodes while preserving pan and zoom, with no fit or snap-back when settling ends. The initial graph may auto-fit once; explicit camera gestures cancel that pending fit. Fit View remains the explicit framing control. Model coordinates and pins remain authoritative.
+- **Grid forces instead of quadtree forces.** `d3-force` rebuilds a quadtree object graph every tick for both many-body repulsion and collision. At a few thousand nodes that costs ~16 ms and ~14 ms per tick respectively, so a settle frame overruns and interaction stutters. The built-in replacements keep d3's math and API but work on flat typed arrays: Barnes-Hut over a quadtree held in `Int32Array`/`Float64Array` for repulsion, and a uniform grid for collision. Measured here on 3,585 nodes: charge 16 ms → ~5 ms, collision 14 ms → ~1.2 ms per tick.
+- **Nothing renders while idle.** Frames are scheduled only for a settle, a gesture or a highlight transition; hit testing walks a typed-array coordinate buffer instead of resolving styles per node, and sub-pixel nodes paint as `rect` instead of arcs.
 
-`interaction` controls pointer gestures; toolbar camera commands remain available while the toolbar is visible. Touch supports single-finger pan and two-finger zoom; node dragging is mouse/pen. Wheel zoom prevents page scroll only when graph zoom is enabled.
+For dense graphs on high-DPI screens, trade detail for speed:
+
+```tsx
+const config: GraphConfig = {
+  controls: false,
+  rendering: { pixelRatio: 1 },
+  labels: { visible: false },
+  physics: { collisionIterations: 1, chargeDistance: 320, settleTicks: 140 },
+  camera: { autoFitSelection: false },
+};
+```
+
+Capacity depends on topology, zoom, hardware and label density; the renderer is Canvas 2D on the main thread, not WebGL. Measure with `onMetrics`.
+
+### Hover threshold
+
+Zoomed out, a node can be a fraction of a pixel wide. Hovering it then dims the
+map around a dot you cannot see, so `interaction.hoverMinZoom` disables hover
+entirely below a zoom level — no highlight, no dimming, neutral cursor:
+
+```tsx
+const config: GraphConfig = { interaction: { hoverMinZoom: 1.1 } };
+```
+
+`0` (the default) leaves hover enabled at every zoom. The demo uses `1.1`, so
+the fitted overview stays static and hover begins once you zoom into a cluster.
 
 ## Selection and events
 
-Selection works internally without any additional props. For controlled selection:
-
 ```tsx
-const [selectedId, setSelectedId] = useState<string | null>(null);
+const [selected, setSelected] = useState<string | null>(null);
 
 <GraphCanvas
   nodes={nodes}
   links={links}
-  selectedId={selectedId}
-  onSelect={(id, node) => setSelectedId(id)}
+  selectedId={selected}
+  onSelect={(id) => setSelected(id)}
   onNodeHover={(node) => console.log(node?.id)}
 />;
 ```
 
-Omit `selectedId` for internal state; `defaultSelectedId` sets its initial value. Explicit `selectedId={null}` means controlled, cleared selection. `onSelect(id, node)` receives your original node, or `(null, null)` for empty space. `onNodeHover(node)` receives the original node, or `null` on exit.
+Omit `selectedId` for internal state; `defaultSelectedId` sets its initial value; explicit `null` means controlled and cleared. `onSelect(id, node)` gets your original node or `(null, null)` for empty space.
 
-`activeIds?: ReadonlySet<string>` dims nodes outside the set (omit for all active); `emphasisIds?: ReadonlySet<string>` adds outlines. `className`, `style`, `ariaLabel`, and `theme: "light" | "dark"` customize the graph container. Default theme is light; pass your application's current theme explicitly.
+`activeIds` dims nodes outside the set, `emphasisIds` outlines them, and `theme: "light" | "dark"` plus `className`/`style` style the container. Hover focuses the node, its neighbours and incident links; clicking keeps that focus. `connectionsFor(id, { nodes, links })` returns typed neighbours.
 
-Hover eases the current node and its incident links to the purple theme accent (`--graph-accent`). Directly connected nodes retain a neutral bright highlight; unrelated nodes and links dim. Clicking keeps the same focus effect selected, with **no selection border or halo**. Hovering another node temporarily overrides selection; leaving restores the selected focus. Clicking empty space clears selection. Highlighting, title reveal, link width and dimming ease in/out over 240 ms, continuing from their current visual values when the pointer changes nodes quickly. The current focus title smoothly grows to 125% and shrinks back when focus changes; neighbour titles stay at normal size. Reduced motion applies these changes immediately.
+The canvas is visual and hidden from screen readers — provide an accessible list or inspector from the same data.
 
-Labels sit directly below their nodes with a consistent 3 px gap to the label bitmap. The current focus label eases another 6 px downward to clear the cursor; neighbour labels stay close. Text scaling uses cached, supersampled bitmaps instead of allocating a new canvas for every intermediate font size. During a node drag, focus remains on the dragged node and its one-hop neighbourhood, including the revealed titles, even if the pointer crosses another node or leaves the canvas. Release follows the hover under the pointer, falling back to the selected focus; release outside or cancellation also restores selection, or clears focus if nothing is selected.
+### Metrics
 
-`connectionsFor(id, { nodes, links })` returns typed `{ node, link }` entries for either link direction. Resolved d3 endpoints are accepted too. `endpointId` unwraps string/number/object endpoints. Exported model types include `GraphNode`, `GraphLink`, `NodeShape`, `Connection`, `Endpoint`, and `ResolvedLink`.
+`onMetrics={(m) => ...}` reports `GraphMetrics` up to four times per second while active: rendered FPS, render and physics CPU milliseconds, node/link counts, canvas size, pixel ratio and activity. At idle it reports FPS 0 and stops. Keep the readout in its own component so it does not re-render the graph.
 
-The canvas is visual and hidden from screen readers; provide an accessible list or inspector using the same data and selection state. The built-in toolbar uses labelled buttons.
+## Theming
 
-### Performance metrics
-
-Pass `onMetrics={(metrics) => ...}` to receive the exported `GraphMetrics` snapshot, at most four times per second during activity. It reports graph-rendered FPS, average render CPU milliseconds per animation frame, average physics CPU milliseconds per simulation tick, node/link counts, physical canvas dimensions, pixel ratio and activity (`idle`, `layout`, `dragging`, `interacting`). FPS counts distinct browser animation frames, not individual canvas draw calls. CPU timings exclude GPU/compositor time; they are not end-to-end frame latency.
-
-Subscribing paints one frame to populate the snapshot. Otherwise the reporter measures existing work, uses a single pending flush and stops completely at idle; idle FPS is zero. CPU values retain the last sampled work. Omitting `onMetrics` disables timing and reporting. Keep rapidly changing metrics state in a separate readout rather than re-rendering the graph's parent.
-
-## Themes without host-page side effects
-
-Styles are scoped to `.graph-canvas`; importing them does not change `<html>`, the page theme, or the host font. Separate graph instances can have different themes. Override tokens on the graph's own class or `style`, not only an ancestor, because each graph defines its own defaults.
+Styles are scoped to `.graph-canvas` and do not touch the page. Override tokens on the graph's own class or `style`:
 
 ```css
 .my-graph {
@@ -191,62 +157,25 @@ Styles are scoped to `.graph-canvas`; importing them does not change `<html>`, t
   --graph-line: #64748b;
   --graph-text: #94a3b8;
   --graph-foreground: #f8fafc;
-  --graph-font-sans: Inter, system-ui, sans-serif;
 }
 ```
 
-Toolbar tokens: `--graph-control-surface`, `--graph-control-line`, `--graph-control-fg`, `--graph-control-fg-hover`, `--graph-control-hover`, `--graph-control-shadow`. Changing `theme`, `className`, or the `style` object re-reads the palette. Direct stylesheet mutations without a prop change are not observed automatically.
+Toolbar tokens: `--graph-control-surface`, `--graph-control-line`, `--graph-control-fg`, `--graph-control-hover`, `--graph-control-shadow`.
 
-## Lightweight rendering
-
-- No blocking warmup by default; settling is finite and RAF-driven, with no second d3 animation loop.
-- Idle graphs schedule no animation frames.
-- Item accessors, color resolution, stroke grouping and label priority sorting stay outside frame loops.
-- Nodes and links, including purple focus states, are drawn in style batches. Only explicitly outlined `emphasisIds` need individual overlay drawing.
-- Off-screen nodes, labels and links with fully off-screen bounds are culled; links crossing the viewport remain eligible.
-- Reusable screen-cell grids avoid scanning every placed label and every hub for each candidate.
-- Label metrics are cached; glyph canvases are created only after visibility/collision acceptance and reused across frames.
-- One React canvas, not one element per graph item; React does not receive position updates on simulation ticks.
-
-For dense graphs on high-DPI devices, reduce raster cost explicitly:
-
-```tsx
-const config: GraphConfig = {
-  controls: false,
-  rendering: { pixelRatio: 1 },
-  labels: { visible: false },
-  physics: { collisionIterations: 1, chargeDistance: 400 },
-  camera: { autoFitSelection: false },
-};
-```
-
-This trades label detail and collision precision for less work; it is not a promise of a particular node capacity or frame rate. Solver cost depends on topology, zoom, hardware and label density. The renderer uses Canvas 2D on the main thread, not WebGL or a worker.
-
-## Develop, build, and package
+## Demo
 
 ```sh
 bun install
-bun run dev          # demo, default port 5190; override with PORT
-bun run check        # formatting, lint, typecheck
-bun test             # model, layout/update and label-collision behavior
-bun run build:lib    # minified dist/index.js, declarations and styles
-bun run build:demo   # separate demo-dist directory
-bun run build        # library + demo
-bun pm pack          # prepack builds the library; creates obi-graph-0.1.0.tgz
+bun run dev      # demo on port 5190 (PORT overrides)
+bun test         # layout, model and label-collision tests
+bun run check    # formatting, lint, typecheck
+bun run build    # library in dist/, demo in demo-dist/
 ```
 
-Install the generated tarball into another app with `npm install /path/to/obi-graph-0.1.0.tgz` (or `bun add /path/to/obi-graph-0.1.0.tgz`). Consumers need neither Bun nor a TypeScript source loader at runtime. The package exports compiled ESM, declarations, and `obi-graph/styles.css`; demo assets are excluded.
+The demo is a real animal taxonomy: 1,420 species and 2,165 higher taxa sampled from Wikidata. The Playground's **Nodes** slider keeps a stable random 1–100% of them — survivors are re-attached to their nearest kept ancestor, so the graph stays one connected tree at any density instead of dissolving into disconnected fragments. Species are ranked by how many Wikipedia language editions carry them, so recognisable animals dominate. The six sampled classes stay connected through their real shared ancestry — class → clade → phylum → Animalia — instead of six disconnected trees; those shared nodes are drawn in a neutral grey because they belong to no single class.
 
-The full-viewport demo retains the original 37-node / 161-link graph without a header or sidebar. The bottom-left **Playground** button expands live force, link-distance, node-size, label, toolbar and theme controls; Escape collapses it. The controls live in `src/demo/graph-playground.tsx` and do not resize or re-frame the graph when opened. Its initial size scale is 0.65×, charge −600, link strength 0.3 and distance 200 for every link; all nodes share the neutral-grey fill and nothing is initially selected.
+Data is generated once by `bun scripts/fetch-taxonomy.ts` and committed as `src/demo/animal-data.ts`, so the demo runs offline. Bottom-left **Playground** exposes live force, size, label and theme controls; bottom-right shows the node count.
 
-Graph view controls sit at the top-right. The Playground includes live performance metrics only while expanded. Metrics updates are isolated to the readout, and the panel uses an opaque background rather than blurring the moving canvas underneath.
+## Migrating from the source-only interface
 
-### Development annotations
-
-Agentation is installed as a development dependency and mounted only by `bun run dev`. Open its bottom-right **Start feedback mode** toolbar to select elements, add notes and copy structured feedback. For individual canvas nodes, use area annotations: the graph is one canvas, not separate DOM elements per node. Local annotations work without an MCP server; agent sync requires an explicitly configured Agentation endpoint.
-
-The annotation UI is excluded from the production demo and the published library; graph consumers do not install Agentation as a runtime dependency.
-
-### Migrating the original source-only interface
-
-`kind`, `description`, `media`, `degree`, `relation`, and `similarity` are no longer renderer fields. Store them in `data` and choose styles explicitly. `GraphNodeKind`/`GraphRelation` were removed. `connectionsFor` returns `.link` instead of `.relation`. Move old `showContextLabels`/`labelHubsAlways` into `config.labels.alwaysVisible/hubLabelsAlways`, and `autoFitSelection`/`selectionBottomInset` into `config.camera`. `theme`, selection callbacks, and filter sets are no longer required.
+`kind`, `description`, `media`, `degree`, `relation` and `similarity` are no longer renderer fields — store them in `data` and choose styles explicitly. `connectionsFor` returns `.link` instead of `.relation`. Move `showContextLabels`/`labelHubsAlways` into `config.labels` and `autoFitSelection`/`selectionBottomInset` into `config.camera`.
