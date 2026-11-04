@@ -1,11 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  GraphCanvas,
-  connectionsFor,
-  type Connection,
-  type GraphConfig,
-  type Theme,
-} from "../graph/index.ts";
+import { GraphCanvas, type GraphConfig, type Theme } from "../graph/index.ts";
 import {
   MEDIA,
   buildDemoGraph,
@@ -13,6 +7,11 @@ import {
   type DemoLinkData,
   type DemoNodeData,
 } from "./demo-graph.ts";
+import {
+  createMetricsStore,
+  GraphPlayground,
+  type PlaygroundSettings,
+} from "./graph-playground.tsx";
 
 const THEME_KEY = "obi-graph-theme";
 
@@ -54,68 +53,20 @@ function useTheme() {
   return { theme, toggle };
 }
 
-interface SliderFieldProps {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  onChange: (value: number) => void;
-  format?: (value: number) => string;
-}
-
-/** One labelled slider; the value is echoed so a drag is readable as a number. */
-function SliderField({ label, value, min, max, step, onChange, format }: SliderFieldProps) {
-  return (
-    <label className="demo__control">
-      <span className="demo__control-row">
-        <span>{label}</span>
-        <span className="demo__control-value">{format ? format(value) : value.toFixed(2)}</span>
-      </span>
-      <input
-        type="range"
-        className="demo__slider"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
-      />
-    </label>
-  );
-}
-
 export function DemoApp() {
   const { theme, toggle } = useTheme();
   const graph = useMemo(buildDemoGraph, []);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [focusAudience, setFocusAudience] = useState<string | null>(null);
-  const [charge, setCharge] = useState(-600);
-  const [linkStrength, setLinkStrength] = useState(0.3);
-  const [linkDistance, setLinkDistance] = useState(200);
-  const [nodeScale, setNodeScale] = useState(0.65);
-  const [showLabels, setShowLabels] = useState(true);
-  const [showControls, setShowControls] = useState(true);
-
-  const activeIds = useMemo(() => {
-    if (!focusAudience) return new Set(graph.nodes.map((node) => node.id));
-    const hubId = `segment:${focusAudience}`;
-    return new Set([
-      hubId,
-      ...graph.links.filter((link) => link.source === hubId).map((link) => link.target),
-    ]);
-  }, [focusAudience, graph]);
-
-  const selected = useMemo(
-    () => graph.nodes.find((node) => node.id === selectedId) ?? null,
-    [graph.nodes, selectedId],
-  );
-  const connections = useMemo<Connection<DemoNodeData, DemoLinkData>[]>(() => {
-    if (!selectedId) return [];
-    return connectionsFor<DemoNodeData, DemoLinkData>(selectedId, graph);
-  }, [graph, selectedId]);
-
-  const hubs = graph.nodes.filter((node) => node.hub);
+  const [playgroundOpen, setPlaygroundOpen] = useState(false);
+  const [metrics] = useState(createMetricsStore);
+  const [settings, setSettings] = useState<PlaygroundSettings>({
+    charge: -600,
+    linkStrength: 0.3,
+    linkDistance: 200,
+    nodeScale: 0.65,
+    showLabels: true,
+    showControls: true,
+  });
+  const { charge, linkStrength, linkDistance, nodeScale, showLabels, showControls } = settings;
 
   /** Domain data chooses size/shape; the engine supplies the uniform neutral fill. */
   const config = useMemo<GraphConfig<DemoNodeData, DemoLinkData>>(() => {
@@ -138,195 +89,39 @@ export function DemoApp() {
   }, [charge, linkStrength, linkDistance, nodeScale, showLabels, showControls]);
 
   return (
-    <div className="demo">
-      <header className="demo__header">
-        <div>
-          <h1 className="demo__title">obi-graph</h1>
-          <p className="demo__subtitle">
-            Canvas render engine: d3-force layout, camera pan/zoom, drag and selection.
-          </p>
-        </div>
-        <button type="button" className="demo__button" onClick={toggle}>
-          {theme === "dark" ? "Light" : "Dark"} theme
-        </button>
-      </header>
+    <main className="demo" aria-label="Graph playground">
+      <GraphCanvas
+        theme={theme}
+        nodes={graph.nodes}
+        links={graph.links}
+        config={config}
+        onMetrics={playgroundOpen ? metrics.update : undefined}
+      />
 
-      <div className="demo__body">
-        <main className="demo__stage">
-          <GraphCanvas
-            theme={theme}
-            nodes={graph.nodes}
-            links={graph.links}
-            config={config}
-            selectedId={selectedId}
-            activeIds={activeIds}
-            onSelect={setSelectedId}
-          />
-
-          <div className="demo__legend">
-            {MEDIA.map((media) => (
-              <span key={media} className="demo__legend-item">
-                <span
-                  className="demo__swatch"
-                  data-shape={shapeForMedia(media)}
-                  aria-hidden="true"
-                />
-                {media}
-              </span>
-            ))}
-            <span className="demo__legend-item">
-              <span className="demo__swatch demo__swatch--dashed" aria-hidden="true" />
-              similarity
-            </span>
-          </div>
-        </main>
-
-        <aside className="demo__side">
-          <section>
-            <h2 className="demo__heading">Audience</h2>
-            <div className="demo__chips">
-              <button
-                type="button"
-                className="demo__chip"
-                aria-pressed={focusAudience === null}
-                onClick={() => setFocusAudience(null)}
-              >
-                All
-              </button>
-              {hubs.map((hub) => (
-                <button
-                  key={hub.id}
-                  type="button"
-                  className="demo__chip"
-                  aria-pressed={focusAudience === hub.label}
-                  onClick={() => setFocusAudience(hub.label ?? null)}
-                >
-                  {hub.label ?? hub.id}
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section>
-            <h2 className="demo__heading">Layout</h2>
-            <div className="demo__controls">
-              <SliderField
-                label="Charge"
-                value={charge}
-                min={-800}
-                max={-40}
-                step={10}
-                onChange={setCharge}
-                format={(value) => String(Math.round(value))}
-              />
-              <SliderField
-                label="Link strength"
-                value={linkStrength}
-                min={0.05}
-                max={1}
-                step={0.05}
-                onChange={setLinkStrength}
-              />
-              <SliderField
-                label="Link distance"
-                value={linkDistance}
-                min={40}
-                max={220}
-                step={5}
-                onChange={setLinkDistance}
-                format={(value) => String(Math.round(value))}
-              />
-              <SliderField
-                label="Node size"
-                value={nodeScale}
-                min={0.4}
-                max={2}
-                step={0.05}
-                onChange={setNodeScale}
-                format={(value) => `${value.toFixed(2)}×`}
-              />
-            </div>
-            <div className="demo__toggles">
-              <button
-                type="button"
-                className="demo__chip"
-                aria-pressed={showLabels}
-                onClick={() => setShowLabels((current) => !current)}
-              >
-                Labels {showLabels ? "on" : "off"}
-              </button>
-              <button
-                type="button"
-                className="demo__chip"
-                aria-pressed={showControls}
-                onClick={() => setShowControls((current) => !current)}
-              >
-                Toolbar {showControls ? "on" : "off"}
-              </button>
-            </div>
-          </section>
-
-          <section>
-            <h2 className="demo__heading">Selection</h2>
-            {selected ? (
-              <div className="demo__detail">
-                <p className="demo__detail-title">{selected.label ?? selected.id}</p>
-                <p className="demo__detail-body">{selected.data?.description}</p>
-                <dl className="demo__stats">
-                  <div>
-                    <dt>kind</dt>
-                    <dd>{selected.data?.kind}</dd>
-                  </div>
-                  <div>
-                    <dt>links</dt>
-                    <dd>{selected.data?.degree}</dd>
-                  </div>
-                  <div>
-                    <dt>media</dt>
-                    <dd>{selected.data?.media ?? "—"}</dd>
-                  </div>
-                </dl>
-                <ul className="demo__connections">
-                  {connections.slice(0, 8).map((connection) => {
-                    const relation = connection.link.data?.relation;
-                    const similarity = connection.link.data?.similarity;
-                    return (
-                      <li key={`${connection.node.id}:${connection.link.id ?? relation ?? "link"}`}>
-                        <button
-                          type="button"
-                          className="demo__connection"
-                          onClick={() => setSelectedId(connection.node.id)}
-                        >
-                          <span>{connection.node.label ?? connection.node.id}</span>
-                          <span className="demo__relation">
-                            {relation}
-                            {similarity === undefined ? "" : ` ${similarity.toFixed(2)}`}
-                            {connection.node.hub ? " · hub" : ""}
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            ) : (
-              <p className="demo__muted">Click a node or its label to inspect it.</p>
-            )}
-          </section>
-
-          <section>
-            <h2 className="demo__heading">Canvas</h2>
-            <p className="demo__muted">
-              {graph.nodes.length} nodes · {graph.links.length} links ·{" "}
-              {graph.links.filter((link) => link.data?.relation === "similarity").length} similarity
-            </p>
-            <p className="demo__muted">
-              Drag to pan, wheel or pinch to zoom, drag a node to reposition it. Rendered at{" "}
-              {typeof window === "undefined" ? 1 : window.devicePixelRatio}× DPR.
-            </p>
-          </section>
-        </aside>
+      <div className="demo__legend">
+        {MEDIA.map((media) => (
+          <span key={media} className="demo__legend-item">
+            <span className="demo__swatch" data-shape={shapeForMedia(media)} aria-hidden="true" />
+            {media}
+          </span>
+        ))}
+        <span className="demo__legend-item">
+          <span className="demo__swatch demo__swatch--dashed" aria-hidden="true" />
+          similarity
+        </span>
       </div>
-    </div>
+      <GraphPlayground
+        settings={settings}
+        onChange={setSettings}
+        theme={theme}
+        onToggleTheme={toggle}
+        open={playgroundOpen}
+        metrics={metrics}
+        onOpenChange={(open) => {
+          setPlaygroundOpen(open);
+          if (!open) metrics.update(null);
+        }}
+      />
+    </main>
   );
 }

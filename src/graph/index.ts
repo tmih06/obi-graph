@@ -16,3 +16,4 @@ export {
   type ResolvedLink,
 } from "./model.ts";
 export type { GraphConfig, GraphValue } from "./config.ts";
+export type { GraphMetrics } from "./metrics.ts";

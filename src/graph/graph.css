@@ -59,11 +59,11 @@
   touch-action: none;
 }
 
-/* View controls float clear of the bottom edge so a footer can sit under them. */
+/* View controls stay in the top-right corner, independent of camera movement. */
 .graph-canvas__toolbar {
   position: absolute;
   z-index: 30;
-  inset-block-end: 48px;
+  inset-block-start: 12px;
   inset-inline-end: 12px;
   display: flex;
   align-items: center;

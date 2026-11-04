@@ -173,6 +173,12 @@ Labels sit directly below their nodes with a consistent 3 px gap to the label bi
 
 The canvas is visual and hidden from screen readers; provide an accessible list or inspector using the same data and selection state. The built-in toolbar uses labelled buttons.
 
+### Performance metrics
+
+Pass `onMetrics={(metrics) => ...}` to receive the exported `GraphMetrics` snapshot, at most four times per second during activity. It reports graph-rendered FPS, average render CPU milliseconds per animation frame, average physics CPU milliseconds per simulation tick, node/link counts, physical canvas dimensions, pixel ratio and activity (`idle`, `layout`, `dragging`, `interacting`). FPS counts distinct browser animation frames, not individual canvas draw calls. CPU timings exclude GPU/compositor time; they are not end-to-end frame latency.
+
+Subscribing paints one frame to populate the snapshot. Otherwise the reporter measures existing work, uses a single pending flush and stops completely at idle; idle FPS is zero. CPU values retain the last sampled work. Omitting `onMetrics` disables timing and reporting. Keep rapidly changing metrics state in a separate readout rather than re-rendering the graph's parent.
+
 ## Themes without host-page side effects
 
 Styles are scoped to `.graph-canvas`; importing them does not change `<html>`, the page theme, or the host font. Separate graph instances can have different themes. Override tokens on the graph's own class or `style`, not only an ancestor, because each graph defines its own defaults.
@@ -231,7 +237,9 @@ bun pm pack          # prepack builds the library; creates obi-graph-0.1.0.tgz
 
 Install the generated tarball into another app with `npm install /path/to/obi-graph-0.1.0.tgz` (or `bun add /path/to/obi-graph-0.1.0.tgz`). Consumers need neither Bun nor a TypeScript source loader at runtime. The package exports compiled ESM, declarations, and `obi-graph/styles.css`; demo assets are excluded.
 
-The demo retains the original 37-node / 161-link example and exposes live force, link-distance, node-size, label and toolbar controls. Its initial size scale is 0.65×, charge −600, link strength 0.3 and distance 200 for every link; all nodes share the neutral-grey fill and nothing is initially selected.
+The full-viewport demo retains the original 37-node / 161-link graph without a header or sidebar. The bottom-left **Playground** button expands live force, link-distance, node-size, label, toolbar and theme controls; Escape collapses it. The controls live in `src/demo/graph-playground.tsx` and do not resize or re-frame the graph when opened. Its initial size scale is 0.65×, charge −600, link strength 0.3 and distance 200 for every link; all nodes share the neutral-grey fill and nothing is initially selected.
+
+Graph view controls sit at the top-right. The Playground includes live performance metrics only while expanded. Metrics updates are isolated to the readout, and the panel uses an opaque background rather than blurring the moving canvas underneath.
 
 ### Development annotations
 

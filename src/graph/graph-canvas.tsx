@@ -25,6 +25,7 @@ import {
 } from "./layout.ts";
 import { ScreenGrid } from "./screen-grid.ts";
 import { HighlightTransition, type HighlightStyle } from "./highlight-transition.ts";
+import { GraphMetricsReporter, type GraphMetrics } from "./metrics.ts";
 
 interface LabelHitArea {
   id: string;
@@ -307,6 +308,8 @@ export interface GraphCanvasProps<N = unknown, L = unknown> {
   emphasisIds?: ReadonlySet<string>;
   onSelect?: (id: string | null, node: GraphNode<N> | null) => void;
   onNodeHover?: (node: GraphNode<N> | null) => void;
+  /** Opt-in CPU/frame metrics, batched at most four times per second while active. */
+  onMetrics?: (metrics: GraphMetrics) => void;
   className?: string;
   style?: CSSProperties;
   ariaLabel?: string;
@@ -328,6 +331,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
   emphasisIds = EMPTY_IDS,
   onSelect,
   onNodeHover,
+  onMetrics,
   className,
   style,
   ariaLabel = "Interactive node graph",
@@ -355,7 +359,10 @@ export function GraphCanvas<N = unknown, L = unknown>({
   /** The camera is owned by refs because gestures update it every frame. */
   const cameraRef = useRef<Camera>({ x: 0, y: 0, k: 1 });
   const fitZoomRef = useRef(1);
-  const paintRef = useRef<() => void>(() => {});
+  const paintRef = useRef<(frameTime: number) => void>(() => {});
+  const metricsReporter = useRef<GraphMetricsReporter | null>(null);
+  const metricsCallback = useRef(onMetrics);
+  const highlightAnimating = useRef(false);
   const drawFrame = useRef(0);
   const simulationRef = useRef<Simulation<NodePoint, LinkPoint> | null>(null);
   const retainedAlpha = useRef(0);
@@ -466,9 +473,9 @@ export function GraphCanvas<N = unknown, L = unknown>({
 
   const requestPaint = useCallback(() => {
     if (drawFrame.current) return;
-    drawFrame.current = window.requestAnimationFrame(() => {
+    drawFrame.current = window.requestAnimationFrame((time) => {
       drawFrame.current = 0;
-      paintRef.current();
+      paintRef.current(time);
     });
   }, []);
 
@@ -520,7 +527,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
           x: animation.fromX + (animation.toX - animation.fromX) * eased,
           y: animation.fromY + (animation.toY - animation.fromY) * eased,
         };
-        paintRef.current();
+        paintRef.current(now);
         if (progress < 1) {
           animation.raf = window.requestAnimationFrame(tick);
         } else {
@@ -617,7 +624,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
           x: camera.x - (momentum.vx * travel) / camera.k,
           y: camera.y - (momentum.vy * travel) / camera.k,
         };
-        paintRef.current();
+        paintRef.current(now);
         momentum.vx *= decay;
         momentum.vy *= decay;
         if (Math.hypot(momentum.vx, momentum.vy) < 0.02) {
@@ -755,7 +762,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
       const centerX = state.anchor.graphX - (state.anchor.screenX - width / 2) / next;
       const centerY = state.anchor.graphY - (state.anchor.screenY - height / 2) / next;
       cameraRef.current = { x: centerX, y: centerY, k: next };
-      paintRef.current();
+      paintRef.current(time);
 
       if (Math.abs(state.target - next) < 0.0007) {
         state.raf = 0;
@@ -968,9 +975,12 @@ export function GraphCanvas<N = unknown, L = unknown>({
           // The drag ended between frames; settle handles the rest.
           return;
         }
+        const reporter = metricsReporter.current;
+        const tickStarted = reporter ? performance.now() : 0;
         simulation.tick();
+        reporter?.recordSimulation(performance.now() - tickStarted);
         ticks += 1;
-        paintRef.current();
+        paintRef.current(now);
         if (
           mode === "settle" &&
           (ticks >= settingsRef.current.physics.settleTicks ||
@@ -1771,134 +1781,178 @@ export function GraphCanvas<N = unknown, L = unknown>({
    * One frame: clear, draw links in the camera transform, draw nodes and the
    * label overlay, then stop. Nothing schedules another frame.
    */
-  const paint = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !size.width || !size.height) return;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    const dpr = settings.rendering.pixelRatio ?? (window.devicePixelRatio || 1);
-    const pixelWidth = Math.max(1, Math.round(size.width * dpr));
-    const pixelHeight = Math.max(1, Math.round(size.height * dpr));
-    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
-      canvas.width = pixelWidth;
-      canvas.height = pixelHeight;
-      canvas.style.width = `${size.width}px`;
-      canvas.style.height = `${size.height}px`;
-    }
-
-    const camera = cameraRef.current;
-    const left = camera.x - size.width / (2 * camera.k);
-    const right = camera.x + size.width / (2 * camera.k);
-    const top = camera.y - size.height / (2 * camera.k);
-    const bottom = camera.y + size.height / (2 * camera.k);
-
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.clearRect(0, 0, pixelWidth, pixelHeight);
-    context.setTransform(dpr, 0, 0, dpr, 0, 0);
-    context.save();
-    context.translate(size.width / 2, size.height / 2);
-    context.scale(camera.k, camera.k);
-    context.translate(-camera.x, -camera.y);
-
-    const animatingHighlight = highlight.advance(performance.now());
-    for (const group of linkGroups) {
-      const path = new Path2D();
-      const margin = group.visual.width / camera.k;
-      for (const { source, target } of group.segments) {
-        if (typeof source.x !== "number" || typeof source.y !== "number") continue;
-        if (typeof target.x !== "number" || typeof target.y !== "number") continue;
-        if (
-          Math.max(source.x, target.x) + margin < left ||
-          Math.min(source.x, target.x) - margin > right ||
-          Math.max(source.y, target.y) + margin < top ||
-          Math.min(source.y, target.y) - margin > bottom
-        )
-          continue;
-        path.moveTo(source.x, source.y);
-        path.lineTo(target.x, target.y);
+  const paint = useCallback(
+    (frameTime: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas || !size.width || !size.height) return;
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      const reporter = metricsReporter.current;
+      const renderStarted = reporter ? performance.now() : 0;
+      const dpr = settings.rendering.pixelRatio ?? (window.devicePixelRatio || 1);
+      const pixelWidth = Math.max(1, Math.round(size.width * dpr));
+      const pixelHeight = Math.max(1, Math.round(size.height * dpr));
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
+        canvas.style.width = `${size.width}px`;
+        canvas.style.height = `${size.height}px`;
       }
-      context.lineWidth = group.visual.width / camera.k;
-      context.setLineDash(group.dash ? DASHED_LINE : SOLID_LINE);
-      if (group.visual.highlight < 1) {
+
+      const camera = cameraRef.current;
+      const left = camera.x - size.width / (2 * camera.k);
+      const right = camera.x + size.width / (2 * camera.k);
+      const top = camera.y - size.height / (2 * camera.k);
+      const bottom = camera.y + size.height / (2 * camera.k);
+
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, pixelWidth, pixelHeight);
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.save();
+      context.translate(size.width / 2, size.height / 2);
+      context.scale(camera.k, camera.k);
+      context.translate(-camera.x, -camera.y);
+
+      const animatingHighlight = highlight.advance(performance.now());
+      for (const group of linkGroups) {
+        const path = new Path2D();
+        const margin = group.visual.width / camera.k;
+        for (const { source, target } of group.segments) {
+          if (typeof source.x !== "number" || typeof source.y !== "number") continue;
+          if (typeof target.x !== "number" || typeof target.y !== "number") continue;
+          if (
+            Math.max(source.x, target.x) + margin < left ||
+            Math.min(source.x, target.x) - margin > right ||
+            Math.max(source.y, target.y) + margin < top ||
+            Math.min(source.y, target.y) - margin > bottom
+          )
+            continue;
+          path.moveTo(source.x, source.y);
+          path.lineTo(target.x, target.y);
+        }
+        context.lineWidth = group.visual.width / camera.k;
+        context.setLineDash(group.dash ? DASHED_LINE : SOLID_LINE);
+        if (group.visual.highlight < 1) {
+          context.globalAlpha = group.visual.opacity;
+          context.strokeStyle = group.color;
+          context.stroke(path);
+        }
+        if (group.visual.accent > 0) {
+          context.globalAlpha = group.visual.opacity * group.visual.accent;
+          context.strokeStyle = palette.accent;
+          context.stroke(path);
+        }
+      }
+      context.setLineDash(SOLID_LINE);
+
+      context.strokeStyle = palette.background;
+      context.lineWidth = 0.7;
+      for (const group of nodeBatches.groups) {
+        context.beginPath();
+        let visible = false;
+        for (const node of group.nodes) {
+          const x = node.x ?? 0;
+          const y = node.y ?? 0;
+          if (
+            x + node.radius < left ||
+            x - node.radius > right ||
+            y + node.radius < top ||
+            y - node.radius > bottom
+          )
+            continue;
+          nodePath(context, x, y, node.radius, node.shape, false);
+          visible = true;
+        }
+        if (!visible) continue;
+        if (group.visual.highlight < 1) {
+          context.globalAlpha = group.visual.opacity;
+          context.fillStyle = group.color;
+          context.fill();
+        }
+        if (group.visual.highlight > 0 && group.visual.accent < 1) {
+          context.globalAlpha = group.visual.opacity * group.visual.highlight;
+          context.fillStyle = palette.foreground;
+          context.fill();
+        }
+        if (group.visual.accent > 0) {
+          context.globalAlpha = group.visual.opacity * group.visual.accent;
+          context.fillStyle = palette.accent;
+          context.fill();
+        }
         context.globalAlpha = group.visual.opacity;
-        context.strokeStyle = group.color;
-        context.stroke(path);
+        context.stroke();
       }
-      if (group.visual.accent > 0) {
-        context.globalAlpha = group.visual.opacity * group.visual.accent;
-        context.strokeStyle = palette.accent;
-        context.stroke(path);
-      }
-    }
-    context.setLineDash(SOLID_LINE);
-
-    context.strokeStyle = palette.background;
-    context.lineWidth = 0.7;
-    for (const group of nodeBatches.groups) {
-      context.beginPath();
-      let visible = false;
-      for (const node of group.nodes) {
+      context.globalAlpha = 1;
+      for (const node of nodeBatches.decorated) {
         const x = node.x ?? 0;
         const y = node.y ?? 0;
-        if (
-          x + node.radius < left ||
-          x - node.radius > right ||
-          y + node.radius < top ||
-          y - node.radius > bottom
-        )
+        const radius = node.radius + 9;
+        if (x + radius < left || x - radius > right || y + radius < top || y - radius > bottom)
           continue;
-        nodePath(context, x, y, node.radius, node.shape, false);
-        visible = true;
+        paintNode(context, node);
       }
-      if (!visible) continue;
-      if (group.visual.highlight < 1) {
-        context.globalAlpha = group.visual.opacity;
-        context.fillStyle = group.color;
-        context.fill();
-      }
-      if (group.visual.highlight > 0 && group.visual.accent < 1) {
-        context.globalAlpha = group.visual.opacity * group.visual.highlight;
-        context.fillStyle = palette.foreground;
-        context.fill();
-      }
-      if (group.visual.accent > 0) {
-        context.globalAlpha = group.visual.opacity * group.visual.accent;
-        context.fillStyle = palette.accent;
-        context.fill();
-      }
-      context.globalAlpha = group.visual.opacity;
-      context.stroke();
-    }
-    context.globalAlpha = 1;
-    for (const node of nodeBatches.decorated) {
-      const x = node.x ?? 0;
-      const y = node.y ?? 0;
-      const radius = node.radius + 9;
-      if (x + radius < left || x - radius > right || y + radius < top || y - radius > bottom)
-        continue;
-      paintNode(context, node);
-    }
-    context.restore();
+      context.restore();
 
-    drawLabels(context, camera, dpr);
-    if (animatingHighlight) requestPaint();
-  }, [
-    drawLabels,
-    nodeBatches,
-    palette,
-    highlight,
-    requestPaint,
-    linkGroups,
-    paintNode,
-    size.height,
-    size.width,
-    settings.rendering.pixelRatio,
-  ]);
+      drawLabels(context, camera, dpr);
+      highlightAnimating.current = animatingHighlight;
+      reporter?.recordRender(frameTime, performance.now() - renderStarted);
+      if (animatingHighlight) requestPaint();
+    },
+    [
+      drawLabels,
+      nodeBatches,
+      palette,
+      highlight,
+      requestPaint,
+      linkGroups,
+      paintNode,
+      size.height,
+      size.width,
+      settings.rendering.pixelRatio,
+    ],
+  );
 
   useEffect(() => {
     paintRef.current = paint;
     requestPaint();
   }, [paint, requestPaint]);
+
+  useEffect(() => {
+    metricsCallback.current = onMetrics;
+  }, [onMetrics]);
+
+  const metricsEnabled = onMetrics !== undefined;
+  useEffect(() => {
+    if (!metricsEnabled) return;
+    const reporter = new GraphMetricsReporter(
+      (metrics) => metricsCallback.current?.(metrics),
+      () => ({
+        activity: dragNode.current?.active
+          ? "dragging"
+          : relaxation.current !== null
+            ? "layout"
+            : cameraAnimation.current ||
+                wheelZoom.current?.raf ||
+                panMomentum.current ||
+                panGesture.current?.moved ||
+                highlightAnimating.current
+              ? "interacting"
+              : "idle",
+        nodeCount: previousLayout.current?.data.nodes.length ?? 0,
+        linkCount: previousLayout.current?.data.links.length ?? 0,
+        canvasWidth: canvasRef.current?.width ?? 0,
+        canvasHeight: canvasRef.current?.height ?? 0,
+        pixelRatio: settingsRef.current.rendering.pixelRatio ?? (window.devicePixelRatio || 1),
+      }),
+    );
+    metricsReporter.current = reporter;
+    // Measure one real frame even when subscribing to an already-idle graph.
+    requestPaint();
+    return () => {
+      metricsReporter.current = null;
+      reporter.dispose();
+    };
+  }, [metricsEnabled, requestPaint]);
 
   useEffect(() => {
     setGraphCursor("grab");
