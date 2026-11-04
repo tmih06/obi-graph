@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GraphCanvas, type GraphConfig, type Theme } from "../graph/index.ts";
 import {
-  MEDIA,
-  buildDemoGraph,
-  shapeForMedia,
-  type DemoLinkData,
-  type DemoNodeData,
+  GROUPS,
+  buildAnimalGraph,
+  colorForNode,
+  radiusForNode,
+  sampleAnimalGraph,
+  shapeForNode,
+  type AnimalLinkData,
+  type AnimalNodeData,
 } from "./demo-graph.ts";
 import {
   createMetricsStore,
@@ -55,41 +58,85 @@ function useTheme() {
 
 export function DemoApp() {
   const { theme, toggle } = useTheme();
-  const graph = useMemo(buildDemoGraph, []);
+  const baseGraph = useMemo(buildAnimalGraph, []);
   const [playgroundOpen, setPlaygroundOpen] = useState(false);
   const [metrics] = useState(createMetricsStore);
   const [settings, setSettings] = useState<PlaygroundSettings>({
-    charge: -600,
-    linkStrength: 0.3,
-    linkDistance: 200,
-    nodeScale: 0.65,
+    charge: -90,
+    linkStrength: 0.45,
+    linkDistance: 70,
+    nodeScale: 1,
+    density: 100,
     showLabels: true,
     showControls: true,
   });
-  const { charge, linkStrength, linkDistance, nodeScale, showLabels, showControls } = settings;
+  const { charge, linkStrength, linkDistance, nodeScale, density, showLabels, showControls } =
+    settings;
 
-  /** Domain data chooses size/shape; the engine supplies the uniform neutral fill. */
-  const config = useMemo<GraphConfig<DemoNodeData, DemoLinkData>>(() => {
-    return {
-      physics: { charge, linkStrength, linkDistance },
+  /**
+   * The slider picks a deterministic subset, so lowering it removes nodes
+   * instead of reshuffling the map under the pointer.
+   */
+  const graph = useMemo(() => sampleAnimalGraph(baseGraph, density), [baseGraph, density]);
+
+  /**
+   * Three thousand nodes need a cheaper solver: a short charge radius keeps the
+   * many-body force local, one collision pass is enough with these radii, and
+   * the settle window is fixed so a large graph cannot pin the main thread.
+   */
+  const config = useMemo<GraphConfig<AnimalNodeData, AnimalLinkData>>(
+    () => ({
+      physics: {
+        charge,
+        chargeDistance: 320,
+        linkStrength,
+        linkDistance,
+        collisionPadding: 3,
+        collisionIterations: 1,
+        alphaDecay: 0.05,
+        velocityDecay: 0.6,
+        settleTicks: 140,
+        settleMs: 1600,
+      },
       nodes: {
-        radius: (node) => (node.data?.size ?? 5) * nodeScale,
-        shape: (node) => shapeForMedia(node.data?.media),
+        radius: (node) => radiusForNode(node.data) * nodeScale,
+        color: (node) => colorForNode(node.data),
+        shape: (node) => shapeForNode(node.data),
+        dimOpacity: 0.1,
       },
       links: {
-        dashed: (link) => link.data?.relation === "similarity",
-        width: (link) => (link.data?.relation === "similarity" ? 0.7 : 0.9),
-        distance: linkDistance,
+        // Trunk links are the only thing joining the six clusters, so they are
+        // drawn heavier than the intra-cluster structure they span. No colour is
+        // set on purpose: the theme's edge colour is translucent and must stay
+        // that way, or a few thousand links paint over the whole map.
+        width: (link) => (link.data?.trunk ? 1.4 : link.data?.species ? 0.5 : 0.85),
+        // Species sit tight to their genus; trunk links span the gap between
+        // clusters so the shared ancestry stays visible when zoomed out.
+        distance: (link) =>
+          link.data?.species
+            ? linkDistance * 0.8
+            : link.data?.trunk
+              ? linkDistance * 4
+              : linkDistance * 1.5,
+        strength: (link) =>
+          link.data?.trunk
+            ? linkStrength * 0.5
+            : link.data?.species
+              ? linkStrength
+              : linkStrength * 1.3,
       },
-      labels: {
-        visible: showLabels,
-      },
+      // Hover is off below this zoom: at a fitted overview a pointer motion
+      // would otherwise dim the map the moment it crosses a cluster.
+      interaction: { hoverMinZoom: 1.1 },
+      labels: { visible: showLabels, hubLabelsAlways: true, zoomThreshold: 1.1 },
+      camera: { autoFitSelection: false },
       controls: showControls,
-    };
-  }, [charge, linkStrength, linkDistance, nodeScale, showLabels, showControls]);
+    }),
+    [charge, linkStrength, linkDistance, nodeScale, showLabels, showControls],
+  );
 
   return (
-    <main className="demo" aria-label="Graph playground">
+    <main className="demo" aria-label="Animal taxonomy graph">
       <GraphCanvas
         theme={theme}
         nodes={graph.nodes}
@@ -99,17 +146,22 @@ export function DemoApp() {
       />
 
       <div className="demo__legend">
-        {MEDIA.map((media) => (
-          <span key={media} className="demo__legend-item">
-            <span className="demo__swatch" data-shape={shapeForMedia(media)} aria-hidden="true" />
-            {media}
+        {GROUPS.map((group) => (
+          <span key={group.name} className="demo__legend-item">
+            <span className="demo__swatch" style={{ background: group.color }} aria-hidden="true" />
+            {group.name}
           </span>
         ))}
-        <span className="demo__legend-item">
-          <span className="demo__swatch demo__swatch--dashed" aria-hidden="true" />
-          similarity
-        </span>
       </div>
+
+      <div className="demo__stats">
+        {graph.nodes.length.toLocaleString()} nodes · {graph.links.length.toLocaleString()} links
+        {density < 100
+          ? ` (${Math.round(density)}% of ${baseGraph.nodes.length.toLocaleString()})`
+          : ""}
+        {" · "}data from Wikidata
+      </div>
+
       <GraphPlayground
         settings={settings}
         onChange={setSettings}

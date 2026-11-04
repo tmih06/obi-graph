@@ -7,6 +7,8 @@ export interface PlaygroundSettings {
   linkStrength: number;
   linkDistance: number;
   nodeScale: number;
+  /** Percentage of nodes kept, 1–100. */
+  density: number;
   showLabels: boolean;
   showControls: boolean;
 }
@@ -151,6 +153,15 @@ export function GraphPlayground({
             step={0.05}
             onChange={(value) => change("nodeScale", value)}
             format={(value) => `${value.toFixed(2)}×`}
+          />
+          <SliderField
+            label="Nodes"
+            value={settings.density}
+            min={1}
+            max={100}
+            step={1}
+            onChange={(value) => change("density", value)}
+            format={(value) => `${Math.round(value)}%`}
           />
         </div>
         <div className="playground__toggles">

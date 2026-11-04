@@ -98,32 +98,19 @@ body {
   height: 8px;
   flex: none;
   border-radius: 9999px;
-  background: #bfc3c9;
 }
 
-.demo__swatch[data-shape="square"] {
-  border-radius: 2px;
-}
-
-.demo__swatch[data-shape="triangle"] {
-  border-radius: 1px;
-  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
-}
-
-.demo__swatch[data-shape="diamond"] {
-  border-radius: 1px;
-  transform: rotate(45deg);
-}
-
-.demo__swatch[data-shape="pentagon"] {
-  border-radius: 1px;
-  clip-path: polygon(50% 0%, 100% 38%, 82% 100%, 18% 100%, 0% 38%);
-}
-
-.demo__swatch--dashed {
-  border-radius: 0;
-  background: transparent;
-  border-block-start: 1px dashed var(--demo-fg-3);
-  height: 0;
-  width: 12px;
+.demo__stats {
+  position: absolute;
+  inset-block-end: 12px;
+  inset-inline-end: 12px;
+  z-index: 20;
+  padding: 5px 8px;
+  border: 1px solid var(--demo-control-line);
+  border-radius: 8px;
+  background: var(--demo-control-bg);
+  color: var(--demo-control-fg);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  backdrop-filter: blur(8px);
 }
