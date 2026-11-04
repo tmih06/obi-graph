@@ -28,9 +28,7 @@ export type AnimalRank =
 
 export interface AnimalNodeData {
   rank: AnimalRank;
-  /** Scientific name for species, common name for higher taxa. */
-  name: string;
-  /** Animal class this taxon belongs to, e.g. "Mammals". */
+  /** Animal class this taxon belongs to, e.g. "Mammals"; empty on trunk nodes. */
   group: string;
   /** Wikipedia language editions carrying the article; 0 for higher taxa. */
   links: number;
@@ -46,7 +44,6 @@ export interface AnimalLinkData {
 export interface AnimalGraph {
   nodes: GraphNode<AnimalNodeData>[];
   links: GraphLink<AnimalLinkData>[];
-  counts: { species: number; taxa: number };
 }
 
 /** One colour per animal class; also the legend order. */
@@ -141,7 +138,6 @@ export function buildAnimalGraph(): AnimalGraph {
       y: Math.sin(angle) * ANCHOR_RADIUS,
       data: {
         rank: "class",
-        name: group.name,
         group: group.name,
         links: 0,
       },
@@ -213,7 +209,6 @@ export function buildAnimalGraph(): AnimalGraph {
       y: position.y,
       data: {
         rank: taxon.rank as AnimalRank,
-        name: taxon.name,
         group: taxon.group,
         links: 0,
       },
@@ -240,7 +235,6 @@ export function buildAnimalGraph(): AnimalGraph {
       y: position.y,
       data: {
         rank: "species",
-        name: species.scientific,
         group: species.group,
         links: species.links,
       },
@@ -253,11 +247,7 @@ export function buildAnimalGraph(): AnimalGraph {
     });
   }
 
-  return {
-    nodes,
-    links,
-    counts: { species: ANIMAL_SPECIES.length, taxa: ANIMAL_TAXA.length },
-  };
+  return { nodes, links };
 }
 
 /**
@@ -333,14 +323,7 @@ export function sampleAnimalGraph(graph: AnimalGraph, percent: number): AnimalGr
     addLink(node.id, cursor, { species: false, trunk: !node.data?.group });
   }
 
-  return {
-    nodes,
-    links,
-    counts: {
-      species: nodes.filter((node) => node.data?.rank === "species").length,
-      taxa: nodes.filter((node) => node.data?.rank !== "species").length,
-    },
-  };
+  return { nodes, links };
 }
 
 export function colorForNode(data: AnimalNodeData | undefined): string {

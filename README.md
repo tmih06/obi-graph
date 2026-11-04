@@ -202,8 +202,4 @@ Transfer budget (gzip, measured on the built artifact):
 | CSS + HTML          | 3 KB        |
 | **Total**           | **~143 KB** |
 
-Two choices keep it there. The taxonomy ships as a **positional, interned payload**: every Wikidata QID, rank and group name appears once in a lookup table and rows carry small integers, which is a third of the bytes of a list of objects. Rolldown then emits it as a **separate chunk with `modulepreload`**, so data and code download in parallel and the graph's first paint is not blocked by the payload. The `description` and `common` name fields were dropped: nothing rendered them, and together they were 20 KB.
-
-## Migrating from the source-only interface
-
-`kind`, `description`, `media`, `degree`, `relation` and `similarity` are no longer renderer fields — store them in `data` and choose styles explicitly. `connectionsFor` returns `.link` instead of `.relation`. Move `showContextLabels`/`labelHubsAlways` into `config.labels` and `autoFitSelection`/`selectionBottomInset` into `config.camera`.
+Two choices keep it there. The taxonomy ships as a **positional, interned payload**: every Wikidata QID, rank and group name appears once in a lookup table and rows carry small integers, which is a third of the bytes of a list of objects. Rolldown then emits it as a **separate chunk with `modulepreload`**, so data and code download in parallel and the graph's first paint is not blocked by the payload. Fields nothing renders are not shipped: the payload carries only what the graph draws.
