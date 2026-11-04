@@ -1,56 +1,63 @@
 /**
- * The graph model shared by the canvas and its callers. It carries only what
- * the renderer needs: identity, kind, size, degree, and whether the node
- * anchors the map. Domain payloads (scores, evidence, timestamps) stay in the
- * caller and are not read by the renderer.
+ * The public graph model shared by the canvas and its callers. It carries only
+ * what the renderer needs; application payloads live in `data` and are never
+ * read by the renderer.
  */
 
-/**
- * The renderer's node vocabulary. `segment` and `pool` are anchor kinds that
- * hold a fixed position and keep their labels; `pattern` nodes are the moving
- * leaves sized by the caller's own measure.
- */
-export type GraphNodeKind = "segment" | "pattern" | "pool";
+/** Outline drawn for a node. */
+export type NodeShape = "circle" | "square" | "triangle" | "diamond" | "pentagon";
 
-/** Edges are either a collected observation or a measured centroid similarity. */
-export type GraphRelation = "observed-in" | "similarity";
-
-export interface GraphNode {
+export interface GraphNode<Data = unknown> {
   id: string;
-  kind: GraphNodeKind;
-  label: string;
-  description: string;
-  radius: number;
-  degree: number;
-  /** Pattern content type; drives the node shape. */
-  media?: string;
-  /** Fixed anchors (audience hubs) that must not drift and keep their labels. */
+  label?: string;
+  data?: Data;
+  /** Fixed radius in graph units; defaults to the config value. */
+  radius?: number;
+  color?: string;
+  shape?: NodeShape;
+  /** Per-node many-body strength; overrides the configured charge. */
+  charge?: number;
+  /** Initial position in graph units. */
+  x?: number;
+  y?: number;
+  /** Fixed position; `null` releases the pin. */
+  fx?: number | null;
+  fy?: number | null;
+  /** Anchors keep their labels while the map is zoomed out. */
   hub?: boolean;
 }
 
-export interface GraphLink {
-  id: string;
+export interface GraphLink<Data = unknown> {
+  id?: string;
   source: string;
   target: string;
-  relation: GraphRelation;
-  /** Cosine similarity for `similarity` edges; absent on observations. */
-  similarity?: number;
+  data?: Data;
+  color?: string;
+  width?: number;
+  dashed?: boolean;
+  distance?: number;
+  strength?: number;
 }
 
-export interface Connection {
-  node: GraphNode;
-  relation: GraphRelation;
-}
+export type Endpoint = string | number | { id?: unknown };
 
-/** A link whose endpoints are ids or, after the simulation resolves them, nodes. */
-export type ResolvedLink = Omit<GraphLink, "source" | "target"> & {
+/**
+ * A link whose endpoints are ids or, after the layout simulation has resolved
+ * them, node objects. Kept for the internal force-graph helpers; callers can
+ * keep using the plain {@link GraphLink} shape.
+ */
+export type ResolvedLink<Data = unknown> = Omit<GraphLink<Data>, "source" | "target"> & {
   source: Endpoint;
   target: Endpoint;
 };
 
-export type Endpoint = string | number | { id?: unknown };
+/** One direct relationship of a node: the other node plus the link that joins them. */
+export interface Connection<NodeData = unknown, LinkData = unknown> {
+  node: GraphNode<NodeData>;
+  link: ResolvedLink<LinkData>;
+}
 
-/** Compare an endpoint by id whether or not d3 has resolved it to a node. */
+/** Compare an endpoint by id whether or not the simulation resolved it to a node. */
 export function endpointId(endpoint: Endpoint): string {
   if (!endpoint || typeof endpoint !== "object") return String(endpoint);
   const id = endpoint.id;
@@ -59,22 +66,25 @@ export function endpointId(endpoint: Endpoint): string {
 
 /**
  * Direct relationships of one node. The force graph rewrites link endpoints to
- * node objects, and callers pass unresolved string endpoints, so both are
- * accepted and compared by id.
+ * node objects while callers pass unresolved ids, so both forms are accepted
+ * and compared by id.
  */
-export function connectionsFor(
+export function connectionsFor<NodeData = unknown, LinkData = unknown>(
   id: string,
-  graph: { nodes: readonly GraphNode[]; links: readonly ResolvedLink[] },
-): Connection[] {
+  graph: {
+    nodes: readonly GraphNode<NodeData>[];
+    links: readonly ResolvedLink<LinkData>[];
+  },
+): Connection<NodeData, LinkData>[] {
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
-  const connections: Connection[] = [];
+  const connections: Connection<NodeData, LinkData>[] = [];
   for (const link of graph.links) {
     const source = endpointId(link.source);
     const target = endpointId(link.target);
     const otherId = source === id ? target : target === id ? source : null;
     if (otherId === null) continue;
     const node = byId.get(otherId);
-    if (node) connections.push({ node, relation: link.relation });
+    if (node) connections.push({ node, link });
   }
   return connections;
 }

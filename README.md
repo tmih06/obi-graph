@@ -1,109 +1,231 @@
 # obi-graph
 
-Canvas graph render engine extracted from Trendifest's trend map. It draws an
-interactive node-link graph on a `<canvas>`: d3-force layout, camera pan/zoom
-with inertia, pinch zoom, node dragging, hover/selection, and screen-space
-labels with collision avoidance.
+A small React canvas renderer for interactive force-directed node graphs. Smooth pointer-anchored zoom, inertial pan, node dragging, selection, and collision-aware screen-space labels. Inspired by the feel of Obsidian's graph; not its renderer or an Obsidian dependency.
 
-The engine is framework-thin: React for lifecycle and events, plain Canvas 2D
-for every pixel, `d3-force` only for the layout. There is no SVG layer, no
-per-node DOM, and no animation frame once the graph has settled.
+React 18+ is a peer dependency. The only runtime dependency is `d3-force`; drawing and gestures use native browser APIs. No per-node DOM, icon library, SVG graph layer, or perpetual render loop.
 
-## Run
+## Install and render
 
 ```sh
-bun install
-bun run dev      # vite-plus dev server on :5190
-bun run build    # tsc --noEmit && vp build
-bun run check    # vite-plus format + lint + type check
-bun test         # model unit tests
+npm install obi-graph react
+# or: bun add obi-graph react
 ```
 
-`src/main.tsx` mounts `src/demo/demo-app.tsx`, a harness with synthetic data
-(37 nodes, 161 links) that exercises selection, audience filtering, both
-themes and every gesture.
-
-## Use
-
 ```tsx
-import { GraphCanvas, type GraphLink, type GraphNode } from "obi-graph";
+import { GraphCanvas } from "obi-graph";
 import "obi-graph/styles.css";
 
+const nodes = [
+  { id: "notes", label: "Notes", radius: 10, color: "#8b5cf6" },
+  { id: "ideas", label: "Ideas", shape: "diamond" as const },
+];
+const links = [{ source: "notes", target: "ideas", strength: 0.6 }];
+
+export function Map() {
+  return (
+    <div style={{ position: "relative", height: 500 }}>
+      <GraphCanvas nodes={nodes} links={links} />
+    </div>
+  );
+}
+```
+
+The graph fills its parent; give that parent a size and positioning context. Import the stylesheet once. Next.js App Router callers should put their graph wrapper in a `"use client"` module. Package imports and server-side rendering are safe; actual drawing starts after browser mount.
+
+The repository builds a publishable ESM package; it does not publish automatically. Before registry publication, choose a license and ensure ownership/availability of the `obi-graph` package name. A local packed tarball can be installed before publication (see below).
+
+## Your data, your visual properties
+
+Only a node's string `id` and a link's string `source` / `target` are required. Put arbitrary application payloads in typed `data`; the engine does not interpret them.
+
+```tsx
+import { useMemo } from "react";
+import { GraphCanvas, type GraphConfig, type GraphNode, type GraphLink } from "obi-graph";
+
+type Note = { title: string; importance: number; category: "note" | "tag" };
+type Relationship = { weight: number };
+
+const nodes: GraphNode<Note>[] = [
+  { id: "one", label: "One", data: { title: "First note", importance: 3, category: "note" } },
+  { id: "two", label: "Two", data: { title: "Second note", importance: 1, category: "tag" } },
+];
+const links: GraphLink<Relationship>[] = [{ source: "one", target: "two", data: { weight: 0.8 } }];
+
+export function NotesGraph() {
+  const config = useMemo<GraphConfig<Note, Relationship>>(
+    () => ({
+      nodes: {
+        radius: (node) => 4 + (node.data?.importance ?? 1) * 2,
+        color: (node) => (node.data?.category === "tag" ? "#10b981" : "#8b5cf6"),
+        shape: (node) => (node.data?.category === "tag" ? "diamond" : "circle"),
+        charge: (node) => -100 * (node.data?.importance ?? 1),
+      },
+      links: {
+        strength: (link) => link.data?.weight ?? 0.3,
+        distance: 100,
+        width: 1,
+      },
+      physics: { collisionPadding: 8, velocityDecay: 0.5 },
+      labels: { alwaysVisible: true },
+      camera: { autoFitSelection: false },
+    }),
+    [],
+  );
+
+  return (
+    <div style={{ position: "relative", height: 500 }}>
+      <GraphCanvas
+        nodes={nodes}
+        links={links}
+        config={config}
+        onSelect={(id, node) => console.log(id, node?.data?.title)}
+      />
+    </div>
+  );
+}
+```
+
+**Precedence:** per-item property → configured value/accessor → default. Accessors receive your original objects and run when data/configuration changes, not on animation frames. A node's explicit `radius` therefore overrides `config.nodes.radius`, even if the latter is a function.
+
+Use immutable updates: replace changed arrays/configuration rather than mutating them in place. Memoize stable data and configuration to avoid unnecessary normalization. The engine copies layout fields and never lets d3 mutate caller nodes or links; payloads are retained by reference, not deep-copied.
+
+### Node fields
+
+| Field      | Meaning                                                                          |
+| ---------- | -------------------------------------------------------------------------------- |
+| `id`       | Required, unique non-empty string.                                               |
+| `label`    | Display name; defaults to `id`.                                                  |
+| `data`     | Your typed application payload.                                                  |
+| `radius`   | Radius in graph units; default 5.                                                |
+| `color`    | Canvas-compatible CSS color, e.g. hex/rgb/hsl.                                   |
+| `shape`    | `circle`, `square`, `triangle`, `diamond`, or `pentagon`.                        |
+| `charge`   | Many-body strength; negative repels, positive attracts.                          |
+| `x`, `y`   | Initial coordinates; changing an explicit coordinate repositions the node.       |
+| `fx`, `fy` | Pin either axis. Set to `null` or remove a prior model pin to release it.        |
+| `hub`      | Label anchor: chip background and hub-label behavior. Does **not** pin the node. |
+
+Coordinates remain stable across data refreshes. Unchanged explicit seeds do not reset settled positions. Dragging a free node releases it back into the simulation; dragging a pinned node restores the caller's pin on release.
+
+### Link fields
+
+| Field                      | Meaning                                                                                              |
+| -------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `source`, `target`         | Required node ids.                                                                                   |
+| `id`                       | Optional unique non-empty id; generated from endpoints if omitted. Parallel links need explicit ids. |
+| `data`                     | Your typed relationship payload.                                                                     |
+| `color`, `width`, `dashed` | Stroke color, width in CSS pixels, dashed/solid.                                                     |
+| `distance`, `strength`     | Rest length in graph units and spring strength.                                                      |
+
+Duplicate ids and missing endpoints throw descriptive errors. Links are drawn as straight, undirected strokes; applications decide relationship semantics. Color values are actual Canvas CSS colors, not unresolved `var(...)` expressions.
+
+## Configuration
+
+Every group and field in `GraphConfig<NodeData, LinkData>` is optional. Values should be finite and in the documented range. `nodes.radius/color/shape/charge` and `links.color/width/dashed/distance/strength` accept either a constant or an accessor function.
+
+| Group         | Settings and defaults                                                                                                                                                         |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `physics`     | `charge: -220`, `chargeDistance: 650`, `linkDistance: 90`, `linkStrength: 0.3`                                                                                                |
+|               | `collisionPadding: 10`, `collisionStrength: 1`, `collisionIterations: 3`, `centerStrength: 0.025`                                                                             |
+|               | `alphaDecay: 0.035`, `velocityDecay: 0.5`, `warmupTicks: 0`, `settleTicks: 100`, `settleMs: 2000`                                                                             |
+| `nodes`       | `radius: 5`, `shape: "circle"`, `dimOpacity: 0.16`; color comes from the theme; charge falls back to `physics.charge`                                                         |
+| `links`       | `width: 0.9`, `dashed: false`; theme color; distance/strength fall back to `physics.linkDistance/linkStrength`                                                                |
+| `labels`      | `visible: true`, `alwaysVisible: false`, `hubLabelsAlways: false`, `fontSize: 11`, `hubFontSize: 12`, `zoomThreshold: 0.95`, `fadeRange: 0.3`; theme `color` and `fontFamily` |
+| `camera`      | `minZoom: 0.04`, `maxZoom: 8`, `fitPadding: 92`, `autoFitSelection: true`, `selectionBottomInset: 0`                                                                          |
+| `interaction` | `dragNodes: true`, `pan: true`, `zoom: true`, `inertia: true`                                                                                                                 |
+| `rendering`   | `pixelRatio`: device DPR unless explicitly set to a positive number                                                                                                           |
+| `controls`    | `true`; set `false` to hide the built-in toolbar                                                                                                                              |
+
+Strengths, decay factors, opacity and damping use 0–1. Distances/radii/padding are non-negative; zoom bounds and pixel ratio are positive with `minZoom <= maxZoom`. Tick counts are non-negative integers. Font sizes and `fadeRange` are positive. `settleMs` is a non-negative upper time bound.
+
+`centerStrength` adjusts the weak x/y pull toward the origin; the layout also recenters the graph. Increasing `velocityDecay` damps motion faster. `warmupTicks` is an optional synchronous pre-solve: leave it at zero for fast first paint. Live relaxation stops at the tick/time limit or when the solver cools. Reduced-motion preferences suppress animated settling, inertia and camera tweens; explicit warmup is still honored.
+
+Physics/topology/radius/pin changes preserve existing positions and wake the simulation. Label, color, width, and dash changes repaint without reheating a settled layout. Styling updates during motion retain velocity/cooling. The Restart layout control reseeds free nodes; model coordinates and pins remain authoritative.
+
+`interaction` controls pointer gestures; toolbar camera commands remain available while the toolbar is visible. Touch supports single-finger pan and two-finger zoom; node dragging is mouse/pen. Wheel zoom prevents page scroll only when graph zoom is enabled.
+
+## Selection and events
+
+Selection works internally without any additional props. For controlled selection:
+
+```tsx
+const [selectedId, setSelectedId] = useState<string | null>(null);
+
 <GraphCanvas
-  theme={theme} // "light" | "dark"; must match a class on <html>
   nodes={nodes}
   links={links}
   selectedId={selectedId}
-  activeIds={activeIds} // dimmed when absent
-  emphasisIds={emphasisIds} // outlined when present
-  showContextLabels={false}
-  onSelect={setSelectedId}
+  onSelect={(id, node) => setSelectedId(id)}
+  onNodeHover={(node) => console.log(node?.id)}
 />;
 ```
 
-The canvas is absolutely positioned and fills its parent, so give it a sized,
-`position: relative` container.
+Omit `selectedId` for internal state; `defaultSelectedId` sets its initial value. Explicit `selectedId={null}` means controlled, cleared selection. `onSelect(id, node)` receives your original node, or `(null, null)` for empty space. `onNodeHover(node)` receives the original node, or `null` on exit.
 
-| Prop                | Meaning                                                               |
-| ------------------- | --------------------------------------------------------------------- |
-| `theme`             | Forces a palette re-read after the host flips its theme class.        |
-| `nodes` / `links`   | Model from `./model.ts`; `radius` is in graph units.                  |
-| `selectedId`        | Selected node; drives the ring, label emphasis and the focus control. |
-| `activeIds`         | Nodes drawn at full opacity; everything else dims.                    |
-| `emphasisIds`       | Nodes with an accent outline.                                         |
-| `showContextLabels` | Draw every label, ignoring the zoom-level fade.                       |
-| `labelHubsAlways`   | Keep anchor labels visible at any zoom.                               |
-| `autoFitSelection`  | Re-frame the camera onto the selection when it changes.               |
-| `onSelect`          | Receives the clicked node id, or `null` for empty space.              |
+`activeIds?: ReadonlySet<string>` dims nodes outside the set (omit for all active); `emphasisIds?: ReadonlySet<string>` adds outlines. `className`, `style`, `ariaLabel`, and `theme: "light" | "dark"` customize the graph container. Default theme is light; pass your application's current theme explicitly.
 
-Node `kind` (`segment`, `pattern`, `pool`) and `media`
-(`text`, `image`, `video`, `audio`, `link`) drive hub colour and node shape.
-Nodes with `hub: true` keep their anchor label and get a solid label chip
-instead of a halo.
+`connectionsFor(id, { nodes, links })` returns typed `{ node, link }` entries for either link direction. Resolved d3 endpoints are accepted too. `endpointId` unwraps string/number/object endpoints. Exported model types include `GraphNode`, `GraphLink`, `NodeShape`, `Connection`, `Endpoint`, and `ResolvedLink`.
 
-Data refreshes that only change labels or scores reuse the existing layout
-object and node coordinates; only a change in node ids or link endpoints
-restarts the simulation.
+The canvas is visual and hidden from screen readers; provide an accessible list or inspector using the same data and selection state. The built-in toolbar uses labelled buttons.
 
-## Theming
+## Themes without host-page side effects
 
-Every colour the renderer needs is a CSS custom property resolved from
-`<html>` at paint setup, with light defaults and `.dark` overrides in
-`graph.css`:
+Styles are scoped to `.graph-canvas`; importing them does not change `<html>`, the page theme, or the host font. Separate graph instances can have different themes. Override tokens on the graph's own class or `style`, not only an ancestor, because each graph defines its own defaults.
 
-```
---graph-surface   --graph-foreground   --graph-text   --graph-line
---graph-node      --graph-node-focused --graph-node-attachment
---graph-control-surface  --graph-control-line  --graph-control-fg
---graph-control-fg-hover --graph-control-hover --graph-control-shadow
---graph-font-sans
+```css
+.my-graph {
+  --graph-surface: #101419;
+  --graph-accent: #7dd3fc;
+  --graph-line: #64748b;
+  --graph-text: #94a3b8;
+  --graph-foreground: #f8fafc;
+  --graph-font-sans: Inter, system-ui, sans-serif;
+}
 ```
 
-Host tokens still work: when a `--graph-*` value is absent the renderer falls
-back to `--background-primary`/`--surface`, `--text-normal`/`--fg`,
-`--fg-3` and `--line-strong`. Canvas cannot read CSS variables directly, so
-colours are resolved through a 1×1 probe canvas.
+Toolbar tokens: `--graph-control-surface`, `--graph-control-line`, `--graph-control-fg`, `--graph-control-fg-hover`, `--graph-control-hover`, `--graph-control-shadow`. Changing `theme`, `className`, or the `style` object re-reads the palette. Direct stylesheet mutations without a prop change are not observed automatically.
 
-## Layout
+## Lightweight rendering
 
-`makeGraphData` seeds nodes on a golden-angle spiral, then runs a bounded
-simulation (atomic charge, link, collision, weak x/y centring). A rebuild
-relaxes for at most 100 ticks or 2 s, and a drag keeps the simulation warm
-until release. `prefers-reduced-motion` skips both: the pre-settled spiral is
-used as-is and camera tweens collapse to instant moves.
+- No blocking warmup by default; settling is finite and RAF-driven, with no second d3 animation loop.
+- Idle graphs schedule no animation frames.
+- Item accessors, color resolution, stroke grouping and label priority sorting stay outside frame loops.
+- Ordinary nodes and links are drawn in style batches. Only selected/hovered/emphasized nodes need individual overlay drawing.
+- Off-screen nodes, labels and links with fully off-screen bounds are culled; links crossing the viewport remain eligible.
+- Reusable screen-cell grids avoid scanning every placed label and every hub for each candidate.
+- Label metrics are cached; glyph canvases are created only after visibility/collision acceptance and reused across frames.
+- One React canvas, not one element per graph item; React does not receive position updates on simulation ticks.
 
-## Structure
+For dense graphs on high-DPI devices, reduce raster cost explicitly:
 
+```tsx
+const config: GraphConfig = {
+  controls: false,
+  rendering: { pixelRatio: 1 },
+  labels: { visible: false },
+  physics: { collisionIterations: 1, chargeDistance: 400 },
+  camera: { autoFitSelection: false },
+};
 ```
-src/graph/model.ts        graph types, endpointId, connectionsFor
-src/graph/graph-canvas.tsx  simulation, camera, gestures, painting, labels
-src/graph/graph.css       palette tokens + canvas/toolbar layout
-src/graph/index.ts        public entry
-src/demo/                 synthetic data and harness
-tests/model.test.ts       model unit tests
+
+This trades label detail and collision precision for less work; it is not a promise of a particular node capacity or frame rate. Solver cost depends on topology, zoom, hardware and label density. The renderer uses Canvas 2D on the main thread, not WebGL or a worker.
+
+## Develop, build, and package
+
+```sh
+bun install
+bun run dev          # demo, default port 5190; override with PORT
+bun run check        # formatting, lint, typecheck
+bun test             # model, layout/update and label-collision behavior
+bun run build:lib    # minified dist/index.js, declarations and styles
+bun run build:demo   # separate demo-dist directory
+bun run build        # library + demo
+bun pm pack          # prepack builds the library; creates obi-graph-0.1.0.tgz
 ```
 
-Extracted from `trendifest/src/lib/graph.ts` and
-`trendifest/src/components/trend-graph-canvas.tsx`; the app's Tailwind
-utilities, `@trendifest/opendesk` button and theme hook were replaced with the
-engine's own stylesheet and a `theme` prop.
+Install the generated tarball into another app with `npm install /path/to/obi-graph-0.1.0.tgz` (or `bun add /path/to/obi-graph-0.1.0.tgz`). Consumers need neither Bun nor a TypeScript source loader at runtime. The package exports compiled ESM, declarations, and `obi-graph/styles.css`; demo assets are excluded.
+
+The demo retains the original 37-node / 161-link example and exposes live force, link-distance, node-size, label and toolbar controls.
+
+### Migrating the original source-only interface
+
+`kind`, `description`, `media`, `degree`, `relation`, and `similarity` are no longer renderer fields. Store them in `data` and choose styles explicitly. `GraphNodeKind`/`GraphRelation` were removed. `connectionsFor` returns `.link` instead of `.relation`. Move old `showContextLabels`/`labelHubsAlways` into `config.labels.alwaysVisible/hubLabelsAlways`, and `autoFitSelection`/`selectionBottomInset` into `config.camera`. `theme`, selection callbacks, and filter sets are no longer required.

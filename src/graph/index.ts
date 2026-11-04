@@ -12,7 +12,7 @@ export {
   type Endpoint,
   type GraphLink,
   type GraphNode,
-  type GraphNodeKind,
-  type GraphRelation,
+  type NodeShape,
   type ResolvedLink,
 } from "./model.ts";
+export type { GraphConfig, GraphValue } from "./config.ts";

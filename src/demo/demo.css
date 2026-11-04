@@ -1,5 +1,5 @@
-/* Demo shell. The graph keeps its own palette tokens; these styles only lay
-   out the harness around it. */
+/* Demo shell. The canvas scopes its own tokens to `.graph-canvas`, so the
+   harness declares every colour it needs here instead of inheriting them. */
 
 *,
 *::before,
@@ -17,12 +17,13 @@ body,
 body {
   background: var(--demo-chrome);
   color: var(--demo-fg);
-  font-family: var(--graph-font-sans);
+  font-family: var(--demo-font-sans);
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
 }
 
 :root {
+  --demo-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --demo-chrome: #f5f5f5;
   --demo-surface: #ffffff;
   --demo-line: #e4e4e4;
@@ -32,6 +33,11 @@ body {
   --demo-hover: #f4f4f4;
   --demo-active: #ededed;
   --demo-focus: #6b6b6b;
+  --demo-accent: #7048e8;
+  /* Mirrors the canvas overlay chrome so the legend reads as part of the map. */
+  --demo-control-bg: rgb(255 255 255 / 0.9);
+  --demo-control-line: #e4e4e4;
+  --demo-control-fg: #737373;
 }
 
 .dark {
@@ -44,6 +50,10 @@ body {
   --demo-hover: #232427;
   --demo-active: #2b2c30;
   --demo-focus: #8a8a8a;
+  --demo-accent: #a78bfa;
+  --demo-control-bg: rgb(27 28 31 / 0.9);
+  --demo-control-line: #2e2f33;
+  --demo-control-fg: #8f8f8f;
 }
 
 .theme-switching *,
@@ -125,7 +135,7 @@ body {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--graph-surface);
+  background: var(--demo-surface);
 }
 
 .demo__legend {
@@ -138,10 +148,10 @@ body {
   align-items: center;
   gap: 10px;
   padding: 6px 8px;
-  border: 1px solid var(--graph-control-line);
+  border: 1px solid var(--demo-control-line);
   border-radius: 8px;
-  background: var(--graph-control-surface);
-  color: var(--graph-control-fg);
+  background: var(--demo-control-bg);
+  color: var(--demo-control-fg);
   font-size: 10.5px;
   backdrop-filter: blur(8px);
 }
@@ -157,19 +167,19 @@ body {
   height: 8px;
   flex: none;
   border-radius: 9999px;
-  background: var(--graph-node-focused);
+  background: var(--demo-accent);
 }
 
 .demo__swatch[data-shape="square"] {
   border-radius: 2px;
 }
 
-.demo__swatch[data-shape="video"] {
+.demo__swatch[data-shape="triangle"] {
   border-radius: 1px;
   clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
 }
 
-.demo__swatch[data-shape="audio"] {
+.demo__swatch[data-shape="diamond"] {
   border-radius: 1px;
   transform: rotate(45deg);
 }
@@ -182,7 +192,7 @@ body {
 .demo__swatch--dashed {
   border-radius: 0;
   background: transparent;
-  border-block-start: 1px dashed var(--graph-line);
+  border-block-start: 1px dashed var(--demo-fg-3);
   height: 0;
   width: 12px;
 }
@@ -238,6 +248,46 @@ body {
   background: var(--demo-active);
   color: var(--demo-fg);
   border-color: var(--demo-fg-3);
+}
+
+.demo__controls {
+  display: grid;
+  gap: 8px;
+  margin-block-end: 8px;
+}
+
+.demo__control {
+  display: grid;
+  gap: 3px;
+}
+
+.demo__control-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--demo-fg-2);
+  font-size: 11.5px;
+}
+
+.demo__control-value {
+  color: var(--demo-fg-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.demo__slider {
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--demo-accent);
+  cursor: pointer;
+}
+
+.demo__toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .demo__detail {

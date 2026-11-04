@@ -1,14 +1,4 @@
-import {
-  forceCenter,
-  forceCollide,
-  forceLink,
-  forceManyBody,
-  forceSimulation,
-  forceX,
-  forceY,
-  type Simulation,
-} from "d3-force";
-import { Crosshair, Maximize2, Minus, Plus, RotateCcw } from "lucide-react";
+import { forceSimulation, type Simulation } from "d3-force";
 import {
   useCallback,
   useEffect,
@@ -16,23 +6,24 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type CSSProperties,
 } from "react";
-import { connectionsFor, endpointId, type GraphLink, type GraphNode } from "./model.ts";
-
-type NodePoint = GraphNode & {
-  x?: number;
-  y?: number;
-  vx?: number;
-  vy?: number;
-  fx?: number;
-  fy?: number;
-};
-type LinkPoint = Omit<GraphLink, "source" | "target"> & {
-  source: string | number | NodePoint;
-  target: string | number | NodePoint;
-};
-/** The layout copy: links point at ids until d3 resolves them to node objects. */
-type CanvasGraph = { nodes: NodePoint[]; links: LinkPoint[] };
+import {
+  connectionsFor,
+  endpointId,
+  type GraphLink,
+  type GraphNode,
+  type NodeShape,
+} from "./model.ts";
+import { resolveConfig, type GraphConfig } from "./config.ts";
+import {
+  layoutForces,
+  makeGraphData,
+  type NodePoint,
+  type LinkPoint,
+  type CanvasGraph,
+} from "./layout.ts";
+import { ScreenGrid } from "./screen-grid.ts";
 
 interface LabelHitArea {
   id: string;
@@ -53,12 +44,6 @@ interface Camera {
   k: number;
 }
 
-const MIN_ZOOM = 0.04;
-const MAX_ZOOM = 8;
-/** Relaxation is finite: 100 ticks or two seconds, whichever comes first. */
-const MAX_RELAX_TICKS = 100;
-const MAX_RELAX_MS = 2_000;
-
 /** Camera → screen mapping in CSS pixels, matching the d3-zoom transform. */
 function graphToScreen(camera: Camera, width: number, height: number, x: number, y: number) {
   return {
@@ -74,15 +59,10 @@ function screenToGraph(camera: Camera, width: number, height: number, x: number,
   };
 }
 
-function clampZoom(k: number): number {
-  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, k));
-}
-
 interface LabelBitmap {
   canvas: HTMLCanvasElement;
   width: number;
   height: number;
-  textWidth: number;
 }
 
 /** Default label face; `--graph-font-sans` overrides it from the stylesheet. */
@@ -93,60 +73,63 @@ function smoothstep(edge0: number, edge1: number, value: number) {
   return t * t * (3 - 2 * t);
 }
 
-type NodeShape = "circle" | "square" | "triangle" | "diamond" | "pentagon";
-
-/** Content type decides shape; the visual vocabulary is also in the legend. */
-function shapeFor(media: string | undefined): NodeShape {
-  if (media === "image") return "square";
-  if (media === "video") return "triangle";
-  if (media === "audio") return "diamond";
-  if (media === "link") return "pentagon";
-  return "circle";
-}
-
 /**
  * Build one node outline. Polygons get optically rounded corners: each vertex
  * is replaced by a short quadratic curve, so the square and triangle still read
  * as their shape instead of losing their silhouette to a large radius.
  */
+const POLYGONS = Object.fromEntries(
+  (["square", "triangle", "diamond", "pentagon"] as const).map((shape) => {
+    const sides = shape === "triangle" ? 3 : shape === "pentagon" ? 5 : 4;
+    const rotation = shape === "triangle" ? -Math.PI / 2 : shape === "square" ? Math.PI / 4 : 0;
+    return [
+      shape,
+      Array.from({ length: sides }, (_, index) => {
+        const angle = rotation + (index / sides) * Math.PI * 2;
+        return { x: Math.cos(angle), y: Math.sin(angle) };
+      }),
+    ];
+  }),
+) as Record<Exclude<NodeShape, "circle">, { x: number; y: number }[]>;
+
 function nodePath(
   context: CanvasRenderingContext2D,
   x: number,
   y: number,
   radius: number,
   shape: NodeShape,
+  begin = true,
 ) {
-  context.beginPath();
+  if (begin) context.beginPath();
   if (shape === "circle") {
+    context.moveTo(x + radius, y);
     context.arc(x, y, radius, 0, Math.PI * 2);
     return;
   }
-  const sides = shape === "square" ? 4 : shape === "triangle" ? 3 : shape === "diamond" ? 4 : 5;
-  const rotation = shape === "triangle" ? -Math.PI / 2 : shape === "square" ? Math.PI / 4 : 0;
-  const points = Array.from({ length: sides }, (_, index) => {
-    const angle = rotation + (index / sides) * Math.PI * 2;
-    return { x: x + Math.cos(angle) * radius, y: y + Math.sin(angle) * radius };
-  });
-  const corner = Math.min(radius * 0.35, 2.2);
-  const mix = (from: { x: number; y: number }, to: { x: number; y: number }) => {
-    const length = Math.hypot(to.x - from.x, to.y - from.y) || 1;
-    const t = Math.min(0.5, corner / length);
-    return { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
-  };
-  let first = mix(points[0]!, points[1]!);
-  context.moveTo(first.x, first.y);
-  for (let index = 1; index <= sides; index += 1) {
-    const vertex = points[index % sides]!;
-    const previous = points[(index - 1) % sides]!;
-    const incoming = mix(vertex, previous);
-    const outgoing = mix(vertex, points[(index + 1) % sides]!);
-    context.lineTo(incoming.x, incoming.y);
-    context.quadraticCurveTo(vertex.x, vertex.y, outgoing.x, outgoing.y);
-    if (index === sides) first = outgoing;
+  const points = POLYGONS[shape];
+  const first = points[0]!;
+  const second = points[1]!;
+  const edgeLength = Math.hypot(second.x - first.x, second.y - first.y) * radius;
+  const t = Math.min(0.5, Math.min(radius * 0.35, 2.2) / (edgeLength || 1));
+  context.moveTo(
+    x + (first.x + (second.x - first.x) * t) * radius,
+    y + (first.y + (second.y - first.y) * t) * radius,
+  );
+  for (let index = 1; index <= points.length; index += 1) {
+    const vertex = points[index % points.length]!;
+    const previous = points[(index - 1) % points.length]!;
+    const next = points[(index + 1) % points.length]!;
+    context.lineTo(
+      x + (vertex.x + (previous.x - vertex.x) * t) * radius,
+      y + (vertex.y + (previous.y - vertex.y) * t) * radius,
+    );
+    context.quadraticCurveTo(
+      x + vertex.x * radius,
+      y + vertex.y * radius,
+      x + (vertex.x + (next.x - vertex.x) * t) * radius,
+      y + (vertex.y + (next.y - vertex.y) * t) * radius,
+    );
   }
-  // Wrap back to the first corner so the start edge is closed smoothly.
-  const vertex = points[0]!;
-  context.quadraticCurveTo(vertex.x, vertex.y, first.x, first.y);
   context.closePath();
 }
 
@@ -161,15 +144,10 @@ function makeLabelBitmap(
   background: string,
   dpr: number,
   fontFamily: string,
+  fontSize: number,
+  textWidth: number,
 ): LabelBitmap {
-  const fontSize = isHub ? 12 : 11;
   const font = `${isHub ? 500 : 400} ${fontSize}px ${fontFamily}`;
-  const measure = document.createElement("canvas").getContext("2d");
-  if (!measure) {
-    return { canvas: document.createElement("canvas"), width: 0, height: 0, textWidth: 0 };
-  }
-  measure.font = font;
-  const textWidth = measure.measureText(label).width;
   const width = Math.ceil(textWidth + 8);
   const height = Math.ceil(fontSize + 8);
   const canvas = document.createElement("canvas");
@@ -217,7 +195,7 @@ function makeLabelBitmap(
     context.fillStyle = color;
     context.fillText(label, width / 2, height / 2);
   }
-  return { canvas, width, height, textWidth };
+  return { canvas, width, height };
 }
 
 const INTERACTIVE_TARGET = "button, a, input, select, textarea, [role='dialog']";
@@ -228,34 +206,25 @@ function isGraphSurface(target: EventTarget | null): boolean {
 }
 
 interface GraphPalette {
-  segment: string;
-  pattern: string;
-  pool: string;
+  accent: string;
   foreground: string;
   muted: string;
   background: string;
   edge: string;
   edgeDim: string;
   edgeSelected: string;
-  /** Similarity is a measured affinity, so it stays quieter than an observation. */
-  edgeSimilarity: string;
-  edgeSimilarityDim: string;
   /** Resolved once with the colours so labels never re-read the stylesheet. */
   fontFamily: string;
 }
 
 const FALLBACK_PALETTE: GraphPalette = {
-  segment: "#737373",
-  pattern: "#7048e8",
-  pool: "#a3a3a3",
+  accent: "#7048e8",
   foreground: "#0a0a0a",
   muted: "#737373",
   background: "#ffffff",
   edge: "rgba(115, 115, 115, 0.30)",
   edgeDim: "rgba(115, 115, 115, 0.06)",
   edgeSelected: "rgba(115, 115, 115, 0.62)",
-  edgeSimilarity: "rgba(115, 115, 115, 0.40)",
-  edgeSimilarityDim: "rgba(115, 115, 115, 0.10)",
   fontFamily: LABEL_FONT_FAMILY,
 };
 
@@ -264,6 +233,7 @@ let colorProbe: CanvasRenderingContext2D | null = null;
 /** Canvas cannot read CSS custom properties, so resolve the theme tokens once. */
 function resolveColor(color: string, alpha = 1): string {
   if (!color) return `rgba(120, 120, 120, ${alpha})`;
+  if (typeof document === "undefined") return color;
   colorProbe ??= document.createElement("canvas").getContext("2d", {
     willReadFrequently: true,
   });
@@ -275,28 +245,9 @@ function resolveColor(color: string, alpha = 1): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha * (a / 255)})`;
 }
 
-/** Blend two CSS colors in sRGB; used for the connection-count ramp. */
-function mixColor(from: string, to: string, amount: number): string {
-  colorProbe ??= document.createElement("canvas").getContext("2d", {
-    willReadFrequently: true,
-  });
-  const channels = (color: string) => {
-    if (!colorProbe) return [128, 128, 128, 255];
-    colorProbe.clearRect(0, 0, 1, 1);
-    colorProbe.fillStyle = color;
-    colorProbe.fillRect(0, 0, 1, 1);
-    return [...colorProbe.getImageData(0, 0, 1, 1).data];
-  };
-  const [r1, g1, b1, a1] = channels(from);
-  const [r2, g2, b2, a2] = channels(to);
-  const t = Math.min(1, Math.max(0, amount));
-  const value = (start: number, end: number) => Math.round(start + (end - start) * t);
-  return `rgba(${value(r1!, r2!)}, ${value(g1!, g2!)}, ${value(b1!, b2!)}, ${((a1! + (a2! - a1!) * t) / 255).toFixed(3)})`;
-}
-
-function readPalette(): GraphPalette {
-  if (typeof document === "undefined") return FALLBACK_PALETTE;
-  const styles = getComputedStyle(document.documentElement);
+function readPalette(element?: HTMLElement | null): GraphPalette {
+  if (typeof document === "undefined" || !element) return FALLBACK_PALETTE;
+  const styles = getComputedStyle(element);
   const token = (name: string) => styles.getPropertyValue(name).trim();
   // The engine ships its own defaults (`graph.css`); each token also accepts a
   // host app's name first, so an embedding shell can repaint the map without
@@ -314,34 +265,24 @@ function readPalette(): GraphPalette {
   const muted = token("--graph-text") || token("--fg-3") || FALLBACK_PALETTE.muted;
   const line = token("--graph-line") || token("--line-strong") || "#737373";
   return {
-    segment: token("--graph-node") || muted,
-    pattern: token("--graph-node-focused") || muted,
-    pool: token("--graph-node-attachment") || muted,
+    accent: token("--graph-accent") || FALLBACK_PALETTE.accent,
     foreground: fg,
     muted,
     background: surface,
     edge: resolveColor(line, 0.3),
     edgeDim: resolveColor(line, 0.06),
     edgeSelected: resolveColor(line, 0.62),
-    // Dashed similarity links read thinner than a solid observation, so their
-    // alpha is raised slightly to keep both legible at the same zoom.
-    edgeSimilarity: resolveColor(line, 0.4),
-    edgeSimilarityDim: resolveColor(line, 0.1),
     fontFamily: token("--graph-font-sans") || LABEL_FONT_FAMILY,
   };
-}
-
-/** Similarity links are dashed so a measured proximity never reads as an observation. */
-function isSimilarityLink(link: object): boolean {
-  const relation = "relation" in link ? link.relation : null;
-  return typeof relation === "string" && relation === "similarity";
 }
 
 function useReducedMotion() {
   // The first paint must already respect the preference; a false default would
   // animate one settle before the media query's effect runs.
   const [reduced, setReduced] = useState(
-    () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   );
   useEffect(() => {
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -353,127 +294,24 @@ function useReducedMotion() {
   return reduced;
 }
 
-/** The same forces settle the initial layout offscreen and relax node drags. */
-function layoutForces() {
-  return {
-    charge: forceManyBody<NodePoint>().strength(-220).distanceMax(650),
-    link: forceLink<NodePoint, LinkPoint>()
-      .id((node) => node.id)
-      // Similarity links join already-related nodes, so they sit closer than a
-      // collected observation; everything else keeps the established spacing.
-      .distance((link) => (isSimilarityLink(link) ? 80 : 90))
-      .strength(0.3),
-    collide: forceCollide<NodePoint>((node) => node.radius + 10).iterations(3),
-    x: forceX<NodePoint>(0).strength(0.025),
-    y: forceY<NodePoint>(0).strength(0.025),
-    center: forceCenter<NodePoint>(0, 0),
-  };
-}
-
-/**
- * Layout starts from a golden-angle spiral so nodes never share a spot, then a
- * finite simulation settles the graph. Observation and similarity edges both
- * shape it; nothing is positioned by hand.
- */
-function makeGraphData(
-  sourceNodes: GraphNode[],
-  sourceLinks: GraphLink[],
-  layoutVersion = 0,
-  previous?: CanvasGraph,
-): CanvasGraph {
-  const oldNodes = new Map(previous?.nodes.map((node) => [node.id, node]));
-  const oldLinks = new Map(previous?.links.map((link) => [link.id, link]));
-  if (
-    previous &&
-    sourceNodes.length === previous.nodes.length &&
-    sourceLinks.length === previous.links.length &&
-    sourceNodes.every((node) => oldNodes.has(node.id)) &&
-    sourceLinks.every((link) => {
-      const old = oldLinks.get(link.id);
-      return (
-        old?.relation === link.relation &&
-        endpointId(old.source) === link.source &&
-        endpointId(old.target) === link.target
-      );
-    })
-  ) {
-    // Keep the graph object identity as well as coordinates, so a refresh that
-    // only changes scores or labels does not restart the layout. Collision
-    // padding reserves room for the bounded score-radius changes.
-    for (const node of sourceNodes) Object.assign(oldNodes.get(node.id)!, node);
-    for (const link of sourceLinks) oldLinks.get(link.id)!.similarity = link.similarity;
-    return previous;
-  }
-  const graph: CanvasGraph = {
-    nodes: sourceNodes.map((node, index) => {
-      const old = oldNodes.get(node.id);
-      const angle = index * 2.399963229728653 + layoutVersion * 0.41;
-      const distance = 24 * Math.sqrt(index + 1);
-      return {
-        ...node,
-        x: old?.x ?? Math.cos(angle) * distance,
-        y: old?.y ?? Math.sin(angle) * distance,
-        vx: 0,
-        vy: 0,
-      };
-    }),
-    links: sourceLinks.map((link) => ({ ...link })),
-  };
-
-  const forces = layoutForces();
-  const simulation = forceSimulation<NodePoint>(graph.nodes)
-    .force("charge", forces.charge)
-    .force("link", forces.link)
-    .force("collide", forces.collide)
-    .force("x", forces.x)
-    .force("y", forces.y)
-    .force("center", forces.center)
-    .stop();
-  forces.link.links(graph.links);
-  simulation.alphaDecay(0.035).velocityDecay(0.5).tick(300);
-  simulation.stop();
-  for (const node of graph.nodes) {
-    node.vx = 0;
-    node.vy = 0;
-  }
-  // d3 resolves endpoints to objects; the canvas owns its own link resolution.
-  graph.links = sourceLinks.map((link) => ({ ...link }));
-  return graph;
-}
-
 export type Theme = "light" | "dark";
 
-export interface GraphCanvasProps {
-  /**
-   * Appearance the palette is resolved against. The canvas reads CSS custom
-   * properties from `<html>`, so this value only forces a re-read after the
-   * theme class flips; the tokens themselves stay in the caller's stylesheet.
-   */
-  theme: Theme;
-  nodes: GraphNode[];
-  links: GraphLink[];
-  selectedId: string | null;
-  activeIds: Set<string>;
-  emphasisIds: Set<string>;
-  showContextLabels: boolean;
-  /**
-   * Keep hub labels visible at every zoom level. The map's hubs are viewer
-   * segments, and an unlabeled anchor makes the map unreadable.
-   */
-  labelHubsAlways?: boolean;
-  /**
-   * Re-frame the camera onto the selection. Correct when the graph is a
-   * neighborhood to explore; wrong for a map whose node size encodes a score,
-   * because zooming into one node destroys the comparison the view exists for.
-   */
-  autoFitSelection?: boolean;
-  /**
-   * Height in CSS pixels that an overlay covers at the bottom of the canvas.
-   * Selection framing centres the focused neighbourhood in the remaining
-   * space, so a mobile inspector sheet never hides the node it describes.
-   */
-  selectionBottomInset?: number;
-  onSelect: (id: string | null) => void;
+export interface GraphCanvasProps<N = unknown, L = unknown> {
+  nodes: readonly GraphNode<N>[];
+  links: readonly GraphLink<L>[];
+  config?: GraphConfig<N, L>;
+  theme?: Theme;
+  /** Omit for internal selection state; null explicitly clears controlled selection. */
+  selectedId?: string | null;
+  defaultSelectedId?: string | null;
+  /** Omit to keep every node active. */
+  activeIds?: ReadonlySet<string>;
+  emphasisIds?: ReadonlySet<string>;
+  onSelect?: (id: string | null, node: GraphNode<N> | null) => void;
+  onNodeHover?: (node: GraphNode<N> | null) => void;
+  className?: string;
+  style?: CSSProperties;
+  ariaLabel?: string;
 }
 
 /**
@@ -481,19 +319,39 @@ export interface GraphCanvasProps {
  * node dragging and selection. The canvas is visual; a caller's own list is
  * the keyboard and screen-reader path through the same nodes.
  */
-export function GraphCanvas({
-  theme,
+export function GraphCanvas<N = unknown, L = unknown>({
+  theme = "light",
   nodes,
   links,
-  selectedId,
-  activeIds,
-  emphasisIds,
-  showContextLabels,
-  labelHubsAlways = false,
-  autoFitSelection = true,
-  selectionBottomInset = 0,
+  config,
+  selectedId: controlledSelectedId,
+  defaultSelectedId = null,
+  activeIds: providedActiveIds,
+  emphasisIds = EMPTY_IDS,
   onSelect,
-}: GraphCanvasProps) {
+  onNodeHover,
+  className,
+  style,
+  ariaLabel = "Interactive node graph",
+}: GraphCanvasProps<N, L>) {
+  const settings = useMemo(() => resolveConfig(config), [config]);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const clampZoom = useCallback(
+    (scale: number) => Math.min(settings.camera.maxZoom, Math.max(settings.camera.minZoom, scale)),
+    [settings.camera.minZoom, settings.camera.maxZoom],
+  );
+  const [internalSelectedId, setInternalSelectedId] = useState(defaultSelectedId);
+  const selectedId = controlledSelectedId === undefined ? internalSelectedId : controlledSelectedId;
+  const activeIds = useMemo(
+    () => providedActiveIds ?? new Set(nodes.map((node) => node.id)),
+    [providedActiveIds, nodes],
+  );
+  const sourceNodeIndex = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const showContextLabels = settings.labels.alwaysVisible;
+  const labelHubsAlways = settings.labels.hubLabelsAlways;
+  const autoFitSelection = settings.camera.autoFitSelection;
+  const selectionBottomInset = settings.camera.selectionBottomInset;
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   /** The camera is owned by refs because gestures update it every frame. */
@@ -501,6 +359,7 @@ export function GraphCanvas({
   const paintRef = useRef<() => void>(() => {});
   const drawFrame = useRef(0);
   const simulationRef = useRef<Simulation<NodePoint, LinkPoint> | null>(null);
+  const retainedAlpha = useRef(0);
   const relaxation = useRef<number | null>(null);
   /** Live pointers, so a second touch can become a pinch instead of a pan. */
   const activePointers = useRef(new Map<number, { x: number; y: number }>());
@@ -573,7 +432,7 @@ export function GraphCanvas({
   }, [reducedMotion]);
   const [layoutVersion, setLayoutVersion] = useState(0);
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const [palette, setPalette] = useState(readPalette);
+  const [palette, setPalette] = useState<GraphPalette>(FALLBACK_PALETTE);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [fontReady, setFontReady] = useState(false);
   const previousLayout = useRef<{ version: number; data: CanvasGraph } | null>(null);
@@ -582,23 +441,29 @@ export function GraphCanvas({
     const data = makeGraphData(
       nodes,
       links,
+      settings,
       layoutVersion,
       previous?.version === layoutVersion ? previous.data : undefined,
     );
     previousLayout.current = { version: layoutVersion, data };
     return data;
-  }, [nodes, links, layoutVersion]);
+  }, [nodes, links, settings, layoutVersion]);
   const nodeIndex = useMemo(
     () => new Map(graphData.nodes.map((node) => [node.id, node])),
     [graphData.nodes],
   );
+  useEffect(() => {
+    const drag = dragNode.current;
+    if (!drag) return;
+    const current = nodeIndex.get(drag.node.id);
+    if (current) drag.node = current;
+    else dragNode.current = null;
+  }, [nodeIndex]);
   const parentHubs = useMemo(() => {
     const parents = new Map<string, string[]>();
     for (const link of graphData.links) {
-      // Similarity edges join peers, not a hub to its leaves; label placement
-      // only follows observation edges. Endpoints may already be resolved to
-      // node objects by the simulation, so compare ids.
-      if (link.relation === "similarity") continue;
+      // Label placement follows links from caller-designated hubs.
+      if (!nodeIndex.get(endpointId(link.source))?.hub) continue;
       const source = endpointId(link.source);
       const target = endpointId(link.target);
       const list = parents.get(target) ?? [];
@@ -606,7 +471,7 @@ export function GraphCanvas({
       parents.set(target, list);
     }
     return parents;
-  }, [graphData.links]);
+  }, [graphData.links, nodeIndex]);
 
   useEffect(() => {
     shouldFit.current = true;
@@ -640,7 +505,7 @@ export function GraphCanvas({
     (x: number, y: number, scale: number, duration = 600) => {
       stopWheelZoom();
       stopCameraAnimation();
-      if (duration <= 0) {
+      if (duration <= 0 || reducedMotionRef.current) {
         cameraRef.current = { x, y, k: clampZoom(scale) };
         requestPaint();
         return;
@@ -677,8 +542,15 @@ export function GraphCanvas({
       };
       animation.raf = window.requestAnimationFrame(tick);
     },
-    [requestPaint, stopCameraAnimation, stopWheelZoom],
+    [clampZoom, requestPaint, stopCameraAnimation, stopWheelZoom],
   );
+
+  useEffect(() => {
+    stopWheelZoom();
+    stopCameraAnimation();
+    cameraRef.current.k = clampZoom(cameraRef.current.k);
+    requestPaint();
+  }, [clampZoom, requestPaint, stopCameraAnimation, stopWheelZoom]);
 
   useEffect(
     () => () => {
@@ -727,7 +599,13 @@ export function GraphCanvas({
       const gesture = panGesture.current;
       if (!gesture || gesture.pointerId !== event.pointerId) return;
       panGesture.current = null;
-      if (reducedMotion || !gesture.moved || event.timeStamp - gesture.time > 80) return;
+      if (
+        reducedMotion ||
+        !settings.interaction.inertia ||
+        !gesture.moved ||
+        event.timeStamp - gesture.time > 80
+      )
+        return;
       if (pinch.current) return;
       const speed = Math.hypot(gesture.vx, gesture.vy);
       if (speed < 0.05) return;
@@ -784,7 +662,7 @@ export function GraphCanvas({
       document.removeEventListener("visibilitychange", stopWhenHidden);
       stopCameraAnimation();
     };
-  }, [reducedMotion, stopCameraAnimation]);
+  }, [reducedMotion, settings.interaction.inertia, stopCameraAnimation, requestPaint]);
 
   const getLabelBitmap = useCallback(
     (
@@ -794,11 +672,22 @@ export function GraphCanvas({
       background: string,
       dpr: number,
       fontFamily: string,
+      fontSize: number,
+      textWidth: number,
     ) => {
-      const key = `${isHub ? 1 : 0}|${dpr}|${color}|${background}|${fontFamily}|${label}`;
+      const key = `${isHub ? 1 : 0}|${dpr}|${color}|${background}|${fontFamily}|${fontSize}|${label}`;
       const cached = labelCache.current.get(key);
       if (cached) return cached;
-      const bitmap = makeLabelBitmap(label, isHub, color, background, dpr, fontFamily);
+      const bitmap = makeLabelBitmap(
+        label,
+        isHub,
+        color,
+        background,
+        dpr,
+        fontFamily,
+        fontSize,
+        textWidth,
+      );
       labelCache.current.set(key, bitmap);
       return bitmap;
     },
@@ -823,13 +712,14 @@ export function GraphCanvas({
   }, []);
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => setPalette(readPalette()));
+    const frame = window.requestAnimationFrame(() => setPalette(readPalette(containerRef.current)));
     return () => window.cancelAnimationFrame(frame);
-  }, [theme]);
+  }, [theme, className, style]);
 
   useEffect(() => {
     labelCache.current.clear();
-  }, [palette]);
+    labelHitAreas.current = [];
+  }, [palette, nodes, settings.labels]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -883,6 +773,7 @@ export function GraphCanvas({
 
     function onWheel(event: WheelEvent) {
       if (!isGraphSurface(event.target)) return;
+      if (!settings.interaction.zoom) return;
       event.preventDefault();
       stopCameraAnimation();
 
@@ -938,26 +829,21 @@ export function GraphCanvas({
       if (state?.raf) window.cancelAnimationFrame(state.raf);
       wheelZoom.current = null;
     };
-  }, [stopCameraAnimation]);
+  }, [clampZoom, settings.interaction.zoom, stopCameraAnimation]);
 
-  const compact = size.width < 700 || size.height < 560;
   const nodesRef = useRef(graphData.nodes);
   useEffect(() => {
     nodesRef.current = graphData.nodes;
     sizeRef.current = size;
   }, [graphData.nodes, size]);
 
-  /**
-   * Frame every node with the same padding the previous engine used. Reads
-   * live positions and viewport through refs, so resizing or a data refresh
-   * never restarts the layout just because this callback changed identity.
-   */
+  /** Frame live positions without rebuilding the force layout. */
   const fitAll = useCallback(
     (duration: number) => {
       const { width: viewWidth, height: viewHeight } = sizeRef.current;
       const nodes = nodesRef.current;
       if (!viewWidth || !viewHeight || !nodes.length) return;
-      const padding = viewWidth < 700 || viewHeight < 560 ? 44 : 92;
+      const padding = settings.camera.fitPadding;
       let minX = Number.POSITIVE_INFINITY;
       let minY = Number.POSITIVE_INFINITY;
       let maxX = Number.NEGATIVE_INFINITY;
@@ -981,7 +867,7 @@ export function GraphCanvas({
       );
       animateCameraTo((minX + maxX) / 2, (minY + maxY) / 2, k, duration);
     },
-    [animateCameraTo],
+    [animateCameraTo, clampZoom, settings.camera.fitPadding],
   );
 
   // Resize the camera, not the simulation, when the sidebar, inspector or
@@ -1029,7 +915,7 @@ export function GraphCanvas({
       // Never let the inset consume the whole viewport; the camera still has
       // to show the group it was asked to frame.
       const bottomInset = Math.min(Math.max(0, selectionBottomInset), size.height * 0.6);
-      const padding = compact ? 42 : 92;
+      const padding = settings.camera.fitPadding;
       const availableWidth = Math.max(1, size.width - padding * 2);
       const availableHeight = Math.max(1, size.height - bottomInset - padding * 2);
       const bboxWidth = Math.max(1, maxX - minX);
@@ -1037,7 +923,7 @@ export function GraphCanvas({
       // "Just enough": a single node and its neighbours would otherwise fill
       // the viewport at the maximum zoom, losing the surrounding context.
       const scale = Math.min(
-        2.2,
+        settings.camera.maxZoom,
         clampZoom(Math.min(availableWidth / bboxWidth, availableHeight / bboxHeight)),
       );
       const targetX = (minX + maxX) / 2;
@@ -1047,7 +933,9 @@ export function GraphCanvas({
     },
     [
       animateCameraTo,
-      compact,
+      clampZoom,
+      settings.camera.fitPadding,
+      settings.camera.maxZoom,
       graphData,
       selectedId,
       selectionBottomInset,
@@ -1056,50 +944,55 @@ export function GraphCanvas({
     ],
   );
 
+  const fitSelectionRef = useRef(fitSelectionCamera);
+  fitSelectionRef.current = fitSelectionCamera;
   useEffect(() => {
     if (!selectedId || !autoFitSelection) return;
-    fitSelectionCamera(620);
-  }, [autoFitSelection, fitSelectionCamera, selectedId]);
+    fitSelectionRef.current(620);
+  }, [autoFitSelection, selectedId]);
 
   /**
    * The layout ticks only while it is asked to: a rebuild relaxes for at most
    * two seconds, and a node drag keeps it warm until the node is released.
    * No animation frame survives a settled graph.
    */
-  const runRelaxation = useCallback((mode: "settle" | "drag") => {
-    const simulation = simulationRef.current;
-    if (!simulation) return;
-    const previous = relaxation.current;
-    if (previous !== null) window.cancelAnimationFrame(previous);
-    const startedAt = performance.now();
-    let ticks = 0;
-    const step = (now: number) => {
-      relaxation.current = null;
-      if (simulationRef.current !== simulation) return;
-      if (mode === "drag" && !dragNode.current?.active) {
-        // The drag ended between frames; settle handles the rest.
-        return;
-      }
-      simulation.tick();
-      ticks += 1;
-      paintRef.current();
-      if (
-        mode === "settle" &&
-        (ticks >= MAX_RELAX_TICKS ||
-          now - startedAt >= MAX_RELAX_MS ||
-          simulation.alpha() < simulation.alphaMin())
-      ) {
-        // The layout is at rest; nothing more is scheduled.
-        if (shouldFit.current) {
-          shouldFit.current = false;
-          fitAll(0);
+  const runRelaxation = useCallback(
+    (mode: "settle" | "drag") => {
+      const simulation = simulationRef.current;
+      if (!simulation) return;
+      const previous = relaxation.current;
+      if (previous !== null) window.cancelAnimationFrame(previous);
+      const startedAt = performance.now();
+      let ticks = 0;
+      const step = (now: number) => {
+        relaxation.current = null;
+        if (simulationRef.current !== simulation) return;
+        if (mode === "drag" && !dragNode.current?.active) {
+          // The drag ended between frames; settle handles the rest.
+          return;
         }
-        return;
-      }
+        simulation.tick();
+        ticks += 1;
+        paintRef.current();
+        if (
+          mode === "settle" &&
+          (ticks >= settingsRef.current.physics.settleTicks ||
+            now - startedAt >= settingsRef.current.physics.settleMs ||
+            simulation.alpha() < simulation.alphaMin())
+        ) {
+          // The layout is at rest; nothing more is scheduled.
+          if (shouldFit.current) {
+            shouldFit.current = false;
+            fitAll(0);
+          }
+          return;
+        }
+        relaxation.current = window.requestAnimationFrame(step);
+      };
       relaxation.current = window.requestAnimationFrame(step);
-    };
-    relaxation.current = window.requestAnimationFrame(step);
-  }, []);
+    },
+    [fitAll],
+  );
 
   const stopRelaxation = useCallback(() => {
     const frame = relaxation.current;
@@ -1111,10 +1004,10 @@ export function GraphCanvas({
   useEffect(() => {
     if (!mountedGraph) return;
     const simulation = forceSimulation<NodePoint, LinkPoint>(graphData.nodes)
-      .alphaDecay(0.035)
-      .velocityDecay(0.5)
+      .alphaDecay(settings.physics.alphaDecay)
+      .velocityDecay(settings.physics.velocityDecay)
       .stop();
-    const forces = layoutForces();
+    const forces = layoutForces(settings);
     simulation
       .force("charge", forces.charge)
       .force("link", forces.link)
@@ -1126,8 +1019,8 @@ export function GraphCanvas({
     // place, which the hit tests and label placement rely on.
     forces.link.links(graphData.links);
     simulationRef.current = simulation;
-    if (reducedMotionRef.current) {
-      // Reduced motion keeps the pre-settled layout untouched.
+    if (reducedMotionRef.current || (!graphData.layoutChanged && retainedAlpha.current === 0)) {
+      simulation.alpha(0);
       if (shouldFit.current) {
         shouldFit.current = false;
         fitAll(0);
@@ -1138,15 +1031,16 @@ export function GraphCanvas({
       // cropped close-up; the settled layout is framed again when it comes to
       // rest. A data refresh leaves the user's camera alone.
       if (shouldFit.current) fitAll(0);
-      simulation.alpha(1);
+      simulation.alpha(graphData.layoutChanged ? 1 : retainedAlpha.current);
       runRelaxation("settle");
     }
     return () => {
+      retainedAlpha.current = relaxation.current === null ? 0 : simulation.alpha();
       stopRelaxation();
       simulation.stop();
       if (simulationRef.current === simulation) simulationRef.current = null;
     };
-  }, [fitAll, graphData, mountedGraph, runRelaxation, stopRelaxation]);
+  }, [fitAll, graphData, settings, mountedGraph, requestPaint, runRelaxation, stopRelaxation]);
 
   const reheat = useCallback(() => {
     const simulation = simulationRef.current;
@@ -1155,11 +1049,15 @@ export function GraphCanvas({
     runRelaxation("settle");
   }, [runRelaxation]);
 
-  const updateHovered = useCallback((id: string | null) => {
-    if (hoveredIdRef.current === id) return;
-    hoveredIdRef.current = id;
-    setHoveredId(id);
-  }, []);
+  const updateHovered = useCallback(
+    (id: string | null) => {
+      if (hoveredIdRef.current === id) return;
+      hoveredIdRef.current = id;
+      setHoveredId(id);
+      onNodeHover?.(id === null ? null : (sourceNodeIndex.get(id) ?? null));
+    },
+    [onNodeHover, sourceNodeIndex],
+  );
 
   const setGraphCursor = useCallback((cursor: string) => {
     if (cursorRef.current === cursor) return;
@@ -1221,16 +1119,16 @@ export function GraphCanvas({
     dragNode.current = null;
     if (!drag.active) return false;
     const { node } = drag;
-    // Let the force layout reclaim the node; it should drift back rather than
-    // sticking to the drop point.
-    node.fx = undefined;
-    node.fy = undefined;
+    // Restore caller pins after a drag; otherwise release back to the layout.
+    const source = sourceNodeIndex.get(node.id);
+    node.fx = source?.fx ?? undefined;
+    node.fy = source?.fy ?? undefined;
     // The drag held the layout warm; release it back to its resting target.
     const simulation = simulationRef.current;
     if (simulation) simulation.alphaTarget(0);
     reheat();
     return true;
-  }, [reheat]);
+  }, [reheat, sourceNodeIndex]);
 
   /** Interrupt camera motion whenever a direct gesture starts. */
   function beginPointer(event: ReactPointerEvent<HTMLDivElement>) {
@@ -1249,6 +1147,7 @@ export function GraphCanvas({
    * already armed a pan; the pinch takes over and cancels it.
    */
   function beginPinch() {
+    if (!settings.interaction.zoom) return;
     const [first, second] = [...activePointers.current.values()];
     if (!first || !second) return;
     const container = containerRef.current;
@@ -1290,7 +1189,11 @@ export function GraphCanvas({
       pointerType: event.pointerType,
     };
     // Reduced motion still pans; only its release glide is suppressed.
-    if (event.isPrimary && (!hitId || event.pointerType === "touch")) {
+    if (
+      settings.interaction.pan &&
+      event.isPrimary &&
+      (!hitId || !settings.interaction.dragNodes || event.pointerType === "touch")
+    ) {
       panGesture.current = {
         pointerId: event.pointerId,
         x: event.clientX,
@@ -1306,7 +1209,7 @@ export function GraphCanvas({
 
     // Mouse/pen node drags are handled directly against live screen geometry.
     // Touch keeps two-finger work for the pinch and single-finger pan.
-    if (event.pointerType !== "touch" && hitId) {
+    if (settings.interaction.dragNodes && event.pointerType !== "touch" && hitId) {
       const node = graphData.nodes.find((candidate) => candidate.id === hitId);
       const point = toGraphPoint(event.clientX, event.clientY);
       if (node && point && typeof node.x === "number" && typeof node.y === "number") {
@@ -1414,7 +1317,7 @@ export function GraphCanvas({
       pinch.current = null;
       pointerStart.current = null;
       const remaining = [...activePointers.current.entries()].at(0);
-      if (remaining && !reducedMotionRef.current) {
+      if (remaining && settings.interaction.pan) {
         const [remainingId, position] = remaining;
         panGesture.current = {
           pointerId: remainingId,
@@ -1451,7 +1354,11 @@ export function GraphCanvas({
       setGraphCursor(hitId ? "pointer" : "grab");
       return;
     }
-    onSelect(start.hitId);
+    if (controlledSelectedId === undefined) setInternalSelectedId(start.hitId);
+    onSelect?.(
+      start.hitId,
+      start.hitId === null ? null : (sourceNodeIndex.get(start.hitId) ?? null),
+    );
     updateHovered(start.hitId);
     setGraphCursor(start.hitId ? "pointer" : "grab");
   }
@@ -1491,19 +1398,9 @@ export function GraphCanvas({
     };
   }, [finishNodeDrag, setGraphCursor, updateHovered]);
 
-  /**
-   * Connection count drives hue: leaves stay near the surface, and the more
-   * links a node has the deeper the accent. The caller already owns radius, so
-   * colour never repeats size.
-   */
   const nodeColor = useCallback(
-    (node: NodePoint) => {
-      if (node.hub) return node.kind === "pool" ? palette.pool : palette.segment;
-      // A single link stays almost white; the ramp saturates as links gather.
-      const weight = Math.min(1, Math.max(0, (node.degree - 1) / 4));
-      return mixColor(palette.background, palette.pattern, 0.12 + weight * 0.88);
-    },
-    [palette],
+    (node: NodePoint) => node.color ?? palette.accent,
+    [palette.accent],
   );
 
   const paintNode = useCallback(
@@ -1516,25 +1413,23 @@ export function GraphCanvas({
       const emphasis = emphasisIds.has(node.id);
       const dim = !active;
       const radius = node.radius + (hovered ? 0.8 : 0);
-      const shape = shapeFor(node.media);
-      const fill = selected || hovered ? palette.pattern : nodeColor(node);
+      const shape = node.shape;
+      const fill = nodeColor(node);
 
       ctx.save();
-      ctx.globalAlpha = dim ? 0.16 : 1;
+      ctx.globalAlpha = dim ? settings.nodes.dimOpacity : 1;
 
       // A selected or hovered node gets a soft halo; everything else stays flat
       // so the map's colour encoding is never mistaken for emphasis.
       if (selected || hovered) {
         nodePath(ctx, x, y, radius + 8, shape);
-        ctx.fillStyle = palette.pattern;
+        ctx.fillStyle = palette.accent;
         ctx.globalAlpha = dim ? 0.06 : 0.16;
         ctx.fill();
-        ctx.globalAlpha = dim ? 0.16 : 1;
+        ctx.globalAlpha = dim ? settings.nodes.dimOpacity : 1;
       }
 
       nodePath(ctx, x, y, radius, shape);
-      // A pattern's fill is the ramp itself; a hub keeps its kind colour so the
-      // map's anchors never read as a claim.
       ctx.fillStyle = fill;
       ctx.fill();
       ctx.lineWidth = 0.7;
@@ -1549,14 +1444,82 @@ export function GraphCanvas({
       } else if (emphasis) {
         nodePath(ctx, x, y, radius + 3.5, shape);
         ctx.lineWidth = 1.1;
-        ctx.strokeStyle = palette.pattern;
+        ctx.strokeStyle = palette.accent;
         ctx.stroke();
       }
 
       ctx.restore();
     },
-    [activeIds, emphasisIds, hoveredId, nodeColor, palette, selectedId],
+    [activeIds, emphasisIds, hoveredId, nodeColor, palette, selectedId, settings.nodes.dimOpacity],
   );
+
+  const nodeBatches = useMemo(() => {
+    const groups = new Map<string, { color: string; opacity: number; nodes: NodePoint[] }>();
+    const decorated: NodePoint[] = [];
+    for (const node of graphData.nodes) {
+      if (node.id === selectedId || node.id === hoveredId || emphasisIds.has(node.id)) {
+        decorated.push(node);
+        continue;
+      }
+      const color = node.color ?? palette.accent;
+      const opacity = activeIds.has(node.id) ? 1 : settings.nodes.dimOpacity;
+      const key = `${color}|${opacity}`;
+      let group = groups.get(key);
+      if (!group) {
+        group = { color, opacity, nodes: [] };
+        groups.set(key, group);
+      }
+      group.nodes.push(node);
+    }
+    return { groups: [...groups.values()], decorated };
+  }, [
+    graphData.nodes,
+    selectedId,
+    hoveredId,
+    emphasisIds,
+    activeIds,
+    palette.accent,
+    settings.nodes.dimOpacity,
+  ]);
+
+  const labelLayout = useMemo(() => {
+    const entries = graphData.nodes.map((node) => ({
+      node,
+      x: 0,
+      y: 0,
+      visible: false,
+      textWidth: -1,
+      box: { left: 0, top: 0, right: 0, bottom: 0 },
+      hubBox: { left: 0, top: 0, right: 0, bottom: 0, radius: 0 },
+      hit: { id: node.id, left: 0, top: 0, right: 0, bottom: 0 },
+    }));
+    return {
+      entries,
+      byId: new Map(entries.map((entry) => [entry.node.id, entry])),
+      placed: new ScreenGrid(),
+      hubs: new ScreenGrid(),
+    };
+  }, [
+    graphData.nodes,
+    settings.labels.fontSize,
+    settings.labels.hubFontSize,
+    settings.labels.fontFamily,
+    palette.fontFamily,
+    fontReady,
+  ]);
+  const labelCandidates = useMemo(() => {
+    const priority = (node: NodePoint) =>
+      node.id === selectedId || node.id === hoveredId
+        ? 3
+        : node.hub
+          ? 1.5
+          : node.degree > 2
+            ? 2
+            : 1;
+    return labelLayout.entries
+      .filter(({ node }) => activeIds.has(node.id) || node.id === hoveredId)
+      .sort((a, b) => priority(b.node) - priority(a.node));
+  }, [labelLayout, activeIds, selectedId, hoveredId]);
 
   /**
    * Labels paint over the graph in screen space, so their size stays stable
@@ -1565,8 +1528,8 @@ export function GraphCanvas({
    */
   const drawLabels = useCallback(
     (context: CanvasRenderingContext2D, camera: Camera, dpr: number) => {
-      if (!size.width || !size.height) {
-        labelHitAreas.current = [];
+      if (!settings.labels.visible || !size.width || !size.height) {
+        labelHitAreas.current.length = 0;
         return;
       }
       if (labelCacheDpr.current !== dpr) {
@@ -1583,39 +1546,46 @@ export function GraphCanvas({
       // Labels describe detail, so they belong to closer zoom levels. Anchors
       // stay named through the default overview (fit ≈ 0.8) and fade only when
       // the whole map shrinks further; leaves need a closer view to appear.
-      const leafFade = smoothstep(0.95, 1.25, zoom);
-      const hubFade = smoothstep(0.45, 0.7, zoom);
-      const positions = new Map<string, { x: number; y: number }>();
-      for (const node of graphData.nodes) {
-        if (typeof node.x !== "number" || typeof node.y !== "number") continue;
-        positions.set(node.id, graphToScreen(camera, size.width, size.height, node.x, node.y));
+      const leafFade = smoothstep(
+        settings.labels.zoomThreshold,
+        settings.labels.zoomThreshold + settings.labels.fadeRange,
+        zoom,
+      );
+      const hubFade = smoothstep(
+        settings.labels.zoomThreshold * 0.5,
+        settings.labels.zoomThreshold * 0.5 + settings.labels.fadeRange,
+        zoom,
+      );
+      const { entries, byId: positions, placed, hubs } = labelLayout;
+      placed.reset(size.width, size.height);
+      hubs.reset(size.width, size.height);
+      for (const entry of entries) {
+        const { node } = entry;
+        entry.visible = typeof node.x === "number" && typeof node.y === "number";
+        if (!entry.visible) continue;
+        entry.x = ((node.x ?? 0) - camera.x) * zoom + size.width / 2;
+        entry.y = ((node.y ?? 0) - camera.y) * zoom + size.height / 2;
+        const radius = node.radius * zoom + 2;
+        entry.visible =
+          entry.x + radius >= 0 &&
+          entry.x - radius <= size.width &&
+          entry.y + radius >= 0 &&
+          entry.y - radius <= size.height;
+        if (node.hub && entry.visible) {
+          const box = entry.hubBox;
+          box.left = entry.x - radius;
+          box.right = entry.x + radius;
+          box.top = entry.y - radius;
+          box.bottom = entry.y + radius;
+          box.radius = radius;
+          hubs.insert(box);
+        }
       }
-      const placed: { left: number; top: number; right: number; bottom: number }[] = [];
-      const hitAreas: LabelHitArea[] = [];
-      const labels = graphData.nodes
-        .filter((node) => {
-          if (!activeIds.has(node.id) && node.id !== hoveredId) return false;
-          if (node.id === selectedId || node.id === hoveredId || showContextLabels) return true;
-          if (labelHubsAlways && node.hub) return true;
-          return node.hub ? hubFade > 0.01 : leafFade > 0.01;
-        })
-        .toSorted((a, b) => {
-          // Hub labels are drawn last so pattern circles cannot paint over the
-          // anchor names; without this a dense cluster hides "Discover".
-          const priority = (node: NodePoint) =>
-            node.id === selectedId || node.id === hoveredId
-              ? 3
-              : node.hub
-                ? 1.5
-                : node.degree > 2
-                  ? 2
-                  : 1;
-          return priority(b) - priority(a);
-        });
-
-      for (const node of labels) {
-        const point = positions.get(node.id);
-        if (!point) continue;
+      const hitAreas = labelHitAreas.current;
+      hitAreas.length = 0;
+      for (const point of labelCandidates) {
+        if (!point.visible) continue;
+        const { node } = point;
         const isHub = node.hub === true;
         const selected = node.id === selectedId;
         const hovered = node.id === hoveredId;
@@ -1626,33 +1596,33 @@ export function GraphCanvas({
               ? hubFade
               : leafFade;
         if (fade < 0.02) continue;
-        const fontSize = isHub ? 12 : 11;
-        const labelColor = selected || hovered ? palette.foreground : palette.muted;
-        const bitmap = getLabelBitmap(
-          node.label,
-          isHub,
-          labelColor,
-          palette.background,
-          dpr,
-          palette.fontFamily,
-        );
-        const textWidth = bitmap.textWidth;
+        const fontSize = isHub ? settings.labels.hubFontSize : settings.labels.fontSize;
+        if (point.textWidth < 0) {
+          context.font = `${isHub ? 500 : 400} ${fontSize}px ${settings.labels.fontFamily ?? palette.fontFamily}`;
+          point.textWidth = context.measureText(node.label).width;
+        }
+        const textWidth = point.textWidth;
         let labelX = point.x;
         // Hubs carry the map's frame and are flanked by their own leaves, so
         // their names sit further out than a leaf label would.
         let labelY = point.y + node.radius * zoom + (isHub ? 22 : 12);
 
         if (!isHub) {
-          const parents = (parentHubs.get(node.id) ?? [])
-            .map((id) => positions.get(id))
-            .filter((parent): parent is { x: number; y: number } => Boolean(parent));
+          let centerX = 0;
+          let centerY = 0;
+          let count = 0;
+          for (const id of parentHubs.get(node.id) ?? EMPTY_PARENTS) {
+            const parent = positions.get(id);
+            if (!parent) continue;
+            centerX += parent.x;
+            centerY += parent.y;
+            count += 1;
+          }
           let directionX = 1;
           let directionY = 0;
-          if (parents.length) {
-            const centerX = parents.reduce((sum, parent) => sum + parent.x, 0) / parents.length;
-            const centerY = parents.reduce((sum, parent) => sum + parent.y, 0) / parents.length;
-            const dx = point.x - centerX;
-            const dy = point.y - centerY;
+          if (count) {
+            const dx = point.x - centerX / count;
+            const dy = point.y - centerY / count;
             const length = Math.hypot(dx, dy);
             if (length > 1) {
               directionX = dx / length;
@@ -1689,51 +1659,49 @@ export function GraphCanvas({
         const top = labelY - fontSize / 2 - pad * 0.5;
         const bottom = labelY + fontSize / 2 + pad * 0.5;
 
-        // Hub names are the frame of the map; nothing may paint over them, not
-        // even the selected label. Selection is already shown by the ring and
-        // the detail panel.
-        if (!isHub) {
-          const coversHub = graphData.nodes.some((other) => {
-            if (!other.hub) return false;
-            const hub = positions.get(other.id);
-            if (!hub) return false;
-            const nearestX = Math.max(left, Math.min(hub.x, right));
-            const nearestY = Math.max(top, Math.min(hub.y, bottom));
-            return Math.hypot(hub.x - nearestX, hub.y - nearestY) < other.radius * zoom + 2;
-          });
-          if (coversHub) continue;
-        }
-
-        const collides = placed.some(
-          (box) => left < box.right && right > box.left && top < box.bottom && bottom > box.top,
-        );
+        if (!isHub && hubs.intersects(left, top, right, bottom)) continue;
+        const collides = placed.intersects(left, top, right, bottom);
         // Hubs stay eligible at every zoom, but cannot overprint another name.
         // Suppressed names remain reachable through the caller's own list.
         if (collides && !selected && !hovered) continue;
 
         if (fade >= 0.3) {
-          hitAreas.push({
-            id: node.id,
-            left: left - 2,
-            top: top - 2,
-            right: right + 2,
-            bottom: bottom + 2,
-          });
+          const hit = point.hit;
+          hit.left = left - 2;
+          hit.top = top - 2;
+          hit.right = right + 2;
+          hit.bottom = bottom + 2;
+          hitAreas.push(hit);
         }
+        // Only accepted labels allocate a raster; hidden labels retain cheap metrics.
+        const bitmap = getLabelBitmap(
+          node.label,
+          isHub,
+          selected || hovered ? palette.foreground : (settings.labels.color ?? palette.muted),
+          palette.background,
+          dpr,
+          settings.labels.fontFamily ?? palette.fontFamily,
+          fontSize,
+          textWidth,
+        );
         const drawX = Math.round((labelX - bitmap.width / 2) * dpr) / dpr;
         const drawY = Math.round((labelY - bitmap.height / 2) * dpr) / dpr;
         context.globalAlpha = fade;
         context.drawImage(bitmap.canvas, drawX, drawY, bitmap.width, bitmap.height);
         context.globalAlpha = 1;
-        placed.push({ left, top, right, bottom });
+        const box = point.box;
+        box.left = left;
+        box.top = top;
+        box.right = right;
+        box.bottom = bottom;
+        placed.insert(box);
       }
-      labelHitAreas.current = hitAreas;
       context.restore();
     },
     [
-      activeIds,
+      labelLayout,
+      labelCandidates,
       getLabelBitmap,
-      graphData.nodes,
       hoveredId,
       labelHubsAlways,
       palette,
@@ -1742,50 +1710,45 @@ export function GraphCanvas({
       showContextLabels,
       size.height,
       size.width,
+      settings.labels,
     ],
   );
 
-  /** Links are stroked per colour/width/dash group to keep one path per style. */
-  const linkStyle = useCallback(
-    (link: LinkPoint) => {
-      const source = endpointId(link.source);
-      const target = endpointId(link.target);
-      const sourceActive = activeIds.has(source);
-      const targetActive = activeIds.has(target);
-      const similar = link.relation === "similarity";
-      const selectedEdge = selectedId !== null && (source === selectedId || target === selectedId);
-      const otherActive = selectedEdge
-        ? source === selectedId
-          ? targetActive
-          : sourceActive
-        : false;
-
-      let color: string;
-      if (selectedEdge) {
-        color = otherActive
-          ? similar
-            ? palette.edgeSimilarity
-            : palette.edgeSelected
-          : similar
-            ? palette.edgeSimilarityDim
-            : palette.edgeDim;
-      } else if (sourceActive && targetActive) {
-        color = similar ? palette.edgeSimilarity : palette.edge;
-      } else {
-        color = similar ? palette.edgeSimilarityDim : palette.edgeDim;
+  /** Batch resolved links outside the animation loop; frames only read positions. */
+  const linkGroups = useMemo(() => {
+    type Group = {
+      color: string;
+      width: number;
+      dash: boolean;
+      segments: { source: NodePoint; target: NodePoint }[];
+    };
+    const groups = new Map<string, Group>();
+    for (const link of graphData.links) {
+      const sourceId = endpointId(link.source);
+      const targetId = endpointId(link.target);
+      const source = nodeIndex.get(sourceId);
+      const target = nodeIndex.get(targetId);
+      if (!source || !target) continue;
+      const active = activeIds.has(sourceId) && activeIds.has(targetId);
+      const selected = selectedId !== null && (sourceId === selectedId || targetId === selectedId);
+      const color = link.color
+        ? resolveColor(link.color, active ? 1 : settings.nodes.dimOpacity)
+        : !active
+          ? palette.edgeDim
+          : selected
+            ? palette.edgeSelected
+            : palette.edge;
+      const width = link.width * (selected && active ? 1.4 : 1);
+      const key = `${color}|${width}|${link.dashed}`;
+      let group = groups.get(key);
+      if (!group) {
+        group = { color, width, dash: link.dashed, segments: [] };
+        groups.set(key, group);
       }
-
-      const width = similar
-        ? selectedEdge && otherActive
-          ? 1
-          : 0.7
-        : selectedEdge && otherActive
-          ? 1.4
-          : 0.9;
-      return { color, width, dash: similar };
-    },
-    [activeIds, palette, selectedId],
-  );
+      group.segments.push({ source, target });
+    }
+    return [...groups.values()];
+  }, [activeIds, graphData.links, nodeIndex, palette, selectedId, settings.nodes.dimOpacity]);
 
   /**
    * One frame: clear, draw links in the camera transform, draw nodes and the
@@ -1796,7 +1759,7 @@ export function GraphCanvas({
     if (!canvas || !size.width || !size.height) return;
     const context = canvas.getContext("2d");
     if (!context) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = settings.rendering.pixelRatio ?? (window.devicePixelRatio || 1);
     const pixelWidth = Math.max(1, Math.round(size.width * dpr));
     const pixelHeight = Math.max(1, Math.round(size.height * dpr));
     if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
@@ -1807,6 +1770,10 @@ export function GraphCanvas({
     }
 
     const camera = cameraRef.current;
+    const left = camera.x - size.width / (2 * camera.k);
+    const right = camera.x + size.width / (2 * camera.k);
+    const top = camera.y - size.height / (2 * camera.k);
+    const bottom = camera.y + size.height / (2 * camera.k);
 
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, pixelWidth, pixelHeight);
@@ -1816,54 +1783,74 @@ export function GraphCanvas({
     context.scale(camera.k, camera.k);
     context.translate(-camera.x, -camera.y);
 
-    // A fresh layout resolves endpoints lazily; the index lets the very first
-    // frame after a data change already draw its edges.
-    const groups = new Map<string, { color: string; width: number; dash: boolean; path: Path2D }>();
-    for (const link of graphData.links) {
-      const source =
-        typeof link.source === "object" ? link.source : nodeIndex.get(String(link.source));
-      const target =
-        typeof link.target === "object" ? link.target : nodeIndex.get(String(link.target));
-      if (!source || !target) continue;
-      if (typeof source.x !== "number" || typeof source.y !== "number") continue;
-      if (typeof target.x !== "number" || typeof target.y !== "number") continue;
-      const style = linkStyle(link);
-      const key = `${style.color}|${style.width}|${style.dash ? 1 : 0}`;
-      let group = groups.get(key);
-      if (!group) {
-        group = {
-          color: style.color,
-          // Stroke widths are declared in screen pixels; the transform is zoomed.
-          width: style.width / camera.k,
-          dash: style.dash,
-          path: new Path2D(),
-        };
-        groups.set(key, group);
+    for (const group of linkGroups) {
+      const path = new Path2D();
+      const margin = group.width / camera.k;
+      for (const { source, target } of group.segments) {
+        if (typeof source.x !== "number" || typeof source.y !== "number") continue;
+        if (typeof target.x !== "number" || typeof target.y !== "number") continue;
+        if (
+          Math.max(source.x, target.x) + margin < left ||
+          Math.min(source.x, target.x) - margin > right ||
+          Math.max(source.y, target.y) + margin < top ||
+          Math.min(source.y, target.y) - margin > bottom
+        )
+          continue;
+        path.moveTo(source.x, source.y);
+        path.lineTo(target.x, target.y);
       }
-      group.path.moveTo(source.x, source.y);
-      group.path.lineTo(target.x, target.y);
-    }
-    for (const group of groups.values()) {
       context.strokeStyle = group.color;
-      context.lineWidth = group.width;
-      context.setLineDash(group.dash ? [3, 3] : []);
-      context.stroke(group.path);
+      context.lineWidth = group.width / camera.k;
+      context.setLineDash(group.dash ? DASHED_LINE : SOLID_LINE);
+      context.stroke(path);
     }
-    context.setLineDash([]);
+    context.setLineDash(SOLID_LINE);
 
-    for (const node of graphData.nodes) paintNode(context, node);
+    context.strokeStyle = palette.background;
+    context.lineWidth = 0.7;
+    for (const group of nodeBatches.groups) {
+      context.beginPath();
+      let visible = false;
+      for (const node of group.nodes) {
+        const x = node.x ?? 0;
+        const y = node.y ?? 0;
+        if (
+          x + node.radius < left ||
+          x - node.radius > right ||
+          y + node.radius < top ||
+          y - node.radius > bottom
+        )
+          continue;
+        nodePath(context, x, y, node.radius, node.shape, false);
+        visible = true;
+      }
+      if (!visible) continue;
+      context.globalAlpha = group.opacity;
+      context.fillStyle = group.color;
+      context.fill();
+      context.stroke();
+    }
+    context.globalAlpha = 1;
+    for (const node of nodeBatches.decorated) {
+      const x = node.x ?? 0;
+      const y = node.y ?? 0;
+      const radius = node.radius + 9;
+      if (x + radius < left || x - radius > right || y + radius < top || y - radius > bottom)
+        continue;
+      paintNode(context, node);
+    }
     context.restore();
 
     drawLabels(context, camera, dpr);
   }, [
     drawLabels,
-    graphData.links,
-    graphData.nodes,
-    linkStyle,
-    nodeIndex,
+    nodeBatches,
+    palette.background,
+    linkGroups,
     paintNode,
     size.height,
     size.width,
+    settings.rendering.pixelRatio,
   ]);
 
   useEffect(() => {
@@ -1875,9 +1862,7 @@ export function GraphCanvas({
     setGraphCursor("grab");
   }, [setGraphCursor]);
 
-  // Hover, selection, palette, size and font readiness rebuild `paint`. Radius
-  // and score updates mutate the existing graph object, so the incoming data
-  // props must request a frame on their own.
+  // Font readiness and incoming data require a repaint even with a stable camera.
   useEffect(() => {
     requestPaint();
   }, [fontReady, nodes, links, paint, requestPaint]);
@@ -1911,7 +1896,11 @@ export function GraphCanvas({
   return (
     <div
       ref={containerRef}
-      className="graph-canvas"
+      className={className ? `graph-canvas ${className}` : "graph-canvas"}
+      style={style}
+      data-theme={theme}
+      role="group"
+      aria-label={ariaLabel}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -1931,55 +1920,86 @@ export function GraphCanvas({
     >
       <canvas ref={canvasRef} aria-hidden="true" className="graph-canvas__surface" />
 
-      <div role="group" aria-label="Graph view controls" className="graph-canvas__toolbar">
-        <button
-          type="button"
-          className="graph-canvas__control"
-          aria-label="Zoom out"
-          title="Zoom out"
-          onClick={() => zoomBy(0.8)}
-        >
-          <Minus />
-        </button>
-        <button
-          type="button"
-          className="graph-canvas__control"
-          aria-label="Zoom in"
-          title="Zoom in"
-          onClick={() => zoomBy(1.25)}
-        >
-          <Plus />
-        </button>
-        <button
-          type="button"
-          className="graph-canvas__control"
-          aria-label="Fit graph to view"
-          title="Fit graph to view"
-          onClick={() => fitAll(reducedMotion ? 0 : 300)}
-        >
-          <Maximize2 />
-        </button>
-        {selectedId && (
+      {settings.controls && (
+        <div role="group" aria-label="Graph view controls" className="graph-canvas__toolbar">
           <button
             type="button"
             className="graph-canvas__control"
-            aria-label="Focus selected node"
-            title="Focus selected node"
-            onClick={() => fitSelectionCamera(reducedMotion ? 0 : 450)}
+            aria-label="Zoom out"
+            title="Zoom out"
+            onClick={() => zoomBy(0.8)}
           >
-            <Crosshair />
+            <ControlIcon name="minus" />
           </button>
-        )}
-        <button
-          type="button"
-          className="graph-canvas__control"
-          aria-label="Restart layout"
-          title="Restart layout"
-          onClick={resetLayout}
-        >
-          <RotateCcw />
-        </button>
-      </div>
+          <button
+            type="button"
+            className="graph-canvas__control"
+            aria-label="Zoom in"
+            title="Zoom in"
+            onClick={() => zoomBy(1.25)}
+          >
+            <ControlIcon name="plus" />
+          </button>
+          <button
+            type="button"
+            className="graph-canvas__control"
+            aria-label="Fit graph to view"
+            title="Fit graph to view"
+            onClick={() => fitAll(reducedMotion ? 0 : 300)}
+          >
+            <ControlIcon name="fit" />
+          </button>
+          {selectedId && (
+            <button
+              type="button"
+              className="graph-canvas__control"
+              aria-label="Focus selected node"
+              title="Focus selected node"
+              onClick={() => fitSelectionCamera(reducedMotion ? 0 : 450)}
+            >
+              <ControlIcon name="focus" />
+            </button>
+          )}
+          <button
+            type="button"
+            className="graph-canvas__control"
+            aria-label="Restart layout"
+            title="Restart layout"
+            onClick={resetLayout}
+          >
+            <ControlIcon name="reset" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
+
+const EMPTY_IDS: ReadonlySet<string> = new Set();
+const DASHED_LINE = [3, 3];
+const SOLID_LINE: number[] = [];
+
+const CONTROL_PATHS = {
+  minus: "M5 12h14",
+  plus: "M5 12h14M12 5v14",
+  fit: "M8 3H3v5M16 3h5v5M3 16v5h5M16 21h5v-5",
+  focus: "M12 2v4M12 18v4M2 12h4M18 12h4M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0",
+  reset: "M3 4v6h6M3 10a9 9 0 1 1 2 8",
+};
+
+function ControlIcon({ name }: { name: keyof typeof CONTROL_PATHS }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={CONTROL_PATHS[name]} />
+    </svg>
+  );
+}
+const EMPTY_PARENTS: readonly string[] = [];

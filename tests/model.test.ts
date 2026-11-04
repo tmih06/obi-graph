@@ -7,19 +7,16 @@ import {
   type ResolvedLink,
 } from "../src/graph/model.ts";
 
-const node = (id: string, hub = false): GraphNode => ({
+const node = (id: string, hub = false): GraphNode<{ note: string }> => ({
   id,
-  kind: hub ? "segment" : "pattern",
   label: id,
-  description: "",
-  radius: 4,
-  degree: 0,
+  data: { note: id },
   hub,
 });
 
-const links: GraphLink[] = [
-  { id: "a", source: "hub", target: "leaf", relation: "observed-in" },
-  { id: "b", source: "leaf", target: "peer", relation: "similarity", similarity: 0.8 },
+const links: GraphLink<{ kind: string }>[] = [
+  { id: "a", source: "hub", target: "leaf", data: { kind: "observed" } },
+  { id: "b", source: "leaf", target: "peer", data: { kind: "similarity" } },
 ];
 
 describe("endpointId", () => {
@@ -40,35 +37,39 @@ describe("endpointId", () => {
 describe("connectionsFor", () => {
   const nodes = [node("hub", true), node("leaf"), node("peer")];
 
-  test("finds relationships from either endpoint", () => {
+  test("finds relationships from either endpoint and returns the joining link", () => {
     const hubConnections = connectionsFor("hub", { nodes, links });
-    expect(hubConnections.map((c) => [c.node.id, c.relation])).toEqual([["leaf", "observed-in"]]);
+    expect(hubConnections.map((c) => [c.node.id, c.link.id])).toEqual([["leaf", "a"]]);
+    expect(hubConnections[0]!.link.data).toEqual({ kind: "observed" });
 
     const peerConnections = connectionsFor("peer", { nodes, links });
-    expect(peerConnections.map((c) => [c.node.id, c.relation])).toEqual([["leaf", "similarity"]]);
+    expect(peerConnections.map((c) => [c.node.id, c.link.id])).toEqual([["leaf", "b"]]);
   });
 
   test("accepts links whose endpoints the simulation already resolved", () => {
-    const resolved: ResolvedLink[] = [
-      {
-        id: "a",
-        relation: "observed-in",
-        source: nodes[0]!,
-        target: nodes[1]!,
-      },
+    const resolved: ResolvedLink<{ kind: string }>[] = [
+      { id: "a", source: nodes[0]!, target: nodes[1]!, data: { kind: "observed" } },
     ];
     expect(connectionsFor("leaf", { nodes, links: resolved }).map((c) => c.node.id)).toEqual([
       "hub",
     ]);
   });
 
-  test("ignores unknown nodes and self-referencing links", () => {
-    const graph = {
+  test("keeps node payloads untouched", () => {
+    const connection = connectionsFor("leaf", { nodes, links })[0]!;
+    expect(connection.node.data).toEqual({ note: "hub" });
+  });
+
+  test("ignores unknown nodes and counts a self-referencing link as one connection", () => {
+    const graph: {
+      nodes: GraphNode<{ note: string }>[];
+      links: GraphLink<{ kind: string }>[];
+    } = {
       nodes,
       links: [
         ...links,
-        { id: "ghost", source: "leaf", target: "missing", relation: "observed-in" as const },
-        { id: "loop", source: "leaf", target: "leaf", relation: "similarity" as const },
+        { id: "ghost", source: "leaf", target: "missing" },
+        { id: "loop", source: "leaf", target: "leaf" },
       ],
     };
     expect(connectionsFor("leaf", graph).map((c) => c.node.id)).toEqual(["hub", "peer", "leaf"]);

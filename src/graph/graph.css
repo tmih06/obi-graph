@@ -1,11 +1,11 @@
 /*
  * Graph engine styles. The canvas paints its own pixels, so this file only
  * supplies the palette tokens the renderer reads at runtime plus the layout of
- * the canvas box and its view controls. Every token has a light default and a
- * `.dark` override, mirroring how the host swaps themes.
+ * the canvas box and its view controls. Defaults are scoped to each graph;
+ * importing the stylesheet never changes the host document's theme.
  */
 
-:root {
+:where(.graph-canvas) {
   color-scheme: light;
 
   --graph-surface: #ffffff;
@@ -13,10 +13,7 @@
   --graph-text: #737373;
   --graph-line: #737373;
 
-  /* Anchor kinds: segment hubs and attachment pools keep their own hue. */
-  --graph-node: #737373;
-  --graph-node-focused: #7048e8;
-  --graph-node-attachment: #a3a3a3;
+  --graph-accent: #7048e8;
 
   /* Chrome around the graph. */
   --graph-control-surface: rgb(255 255 255 / 0.9);
@@ -29,7 +26,7 @@
   --graph-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-.dark {
+:where(.graph-canvas[data-theme="dark"]) {
   color-scheme: dark;
 
   --graph-surface: #1b1c1f;
@@ -37,9 +34,7 @@
   --graph-text: #8f8f8f;
   --graph-line: #a3a3a3;
 
-  --graph-node: #b3b3b3;
-  --graph-node-focused: #a78bfa;
-  --graph-node-attachment: #b3b3b3;
+  --graph-accent: #a78bfa;
 
   --graph-control-surface: rgb(27 28 31 / 0.9);
   --graph-control-line: #2e2f33;
@@ -53,6 +48,7 @@
 .graph-canvas {
   position: absolute;
   inset: 0;
+  background: var(--graph-surface);
 }
 
 .graph-canvas__surface {
@@ -117,6 +113,6 @@
 }
 
 .graph-canvas__control:focus-visible {
-  outline: 2px solid var(--graph-node-focused);
+  outline: 2px solid var(--graph-accent);
   outline-offset: 1px;
 }

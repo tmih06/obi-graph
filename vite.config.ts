@@ -14,15 +14,19 @@ export default defineConfig({
       "@": src,
     },
   },
+  build: {
+    // The demo is a separate artifact from the publishable library in dist/.
+    outDir: "demo-dist",
+  },
   server: {
     port: Number(process.env.PORT ?? 5190),
     strictPort: true,
   },
   fmt: {
-    ignorePatterns: ["dist/**"],
+    ignorePatterns: ["dist/**", "demo-dist/**"],
   },
   lint: {
-    ignorePatterns: ["dist/**"],
+    ignorePatterns: ["dist/**", "demo-dist/**"],
     jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
     rules: { "vite-plus/prefer-vite-plus-imports": "error" },
     options: { typeAware: true, typeCheck: true },

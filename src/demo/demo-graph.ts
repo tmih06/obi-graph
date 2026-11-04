@@ -1,9 +1,13 @@
 /**
  * Synthetic graph for the demo harness. Deterministic: the same ids, links and
- * radii every load, so the layout is comparable between runs.
+ * sizes every load, so the layout is comparable between runs.
+ *
+ * Domain payloads — audience descriptions, media, degree and edge relations —
+ * live in the typed `data` field. The engine never reads them; the demo turns
+ * them into explicit shape, colour and width choices for the canvas.
  */
 
-import type { GraphLink, GraphNode } from "../graph/index.ts";
+import type { GraphLink, GraphNode, NodeShape } from "../graph/index.ts";
 
 const SEGMENTS = [
   "Design",
@@ -48,7 +52,43 @@ const TOPICS = [
   "Edge caching invalidation",
 ] as const;
 
-const MEDIA = ["text", "image", "video", "audio", "link"] as const;
+export const MEDIA = ["text", "image", "video", "audio", "link"] as const;
+
+export type DemoMedia = (typeof MEDIA)[number];
+
+/** Content type maps to an explicit outline; text stays the quiet circle. */
+export function shapeForMedia(media: DemoMedia | undefined): NodeShape {
+  if (media === "image") return "square";
+  if (media === "video") return "triangle";
+  if (media === "audio") return "diamond";
+  if (media === "link") return "pentagon";
+  return "circle";
+}
+
+export type DemoNodeKind = "audience" | "topic";
+
+/** What a demo node means: copy, content type, connection count and base size. */
+export interface DemoNodeData {
+  kind: DemoNodeKind;
+  description: string;
+  media?: DemoMedia;
+  degree: number;
+  /** Radius in graph units before the demo's node-scale control applies. */
+  size: number;
+}
+
+export type DemoRelation = "observed-in" | "similarity";
+
+/** Edge meaning; a similarity edge also carries the measured score. */
+export interface DemoLinkData {
+  relation: DemoRelation;
+  similarity?: number;
+}
+
+export interface DemoGraph {
+  nodes: GraphNode<DemoNodeData>[];
+  links: GraphLink<DemoLinkData>[];
+}
 
 /** Small deterministic PRNG so the demo data is stable across reloads. */
 function mulberry32(seed: number) {
@@ -62,10 +102,10 @@ function mulberry32(seed: number) {
   };
 }
 
-export function buildDemoGraph(): { nodes: GraphNode[]; links: GraphLink[] } {
+export function buildDemoGraph(): DemoGraph {
   const random = mulberry32(42);
-  const nodes: GraphNode[] = [];
-  const links: GraphLink[] = [];
+  const nodes: GraphNode<DemoNodeData>[] = [];
+  const links: GraphLink<DemoLinkData>[] = [];
   const degree = new Map<string, number>();
   const bump = (id: string) => degree.set(id, (degree.get(id) ?? 0) + 1);
 
@@ -95,7 +135,12 @@ export function buildDemoGraph(): { nodes: GraphNode[]; links: GraphLink[] } {
     );
     for (const segment of segments) {
       const id = `observe:${segment.id}:${pattern.id}`;
-      links.push({ id, source: segment.id, target: pattern.id, relation: "observed-in" });
+      links.push({
+        id,
+        source: segment.id,
+        target: pattern.id,
+        data: { relation: "observed-in" },
+      });
       bump(segment.id);
       bump(pattern.id);
     }
@@ -114,8 +159,7 @@ export function buildDemoGraph(): { nodes: GraphNode[]; links: GraphLink[] } {
         id: `similar:${patterns[index]!.id}:${patterns[other]!.id}`,
         source: patterns[index]!.id,
         target: patterns[other]!.id,
-        relation: "similarity",
-        similarity,
+        data: { relation: "similarity", similarity },
       });
       bump(patterns[index]!.id);
       bump(patterns[other]!.id);
@@ -125,25 +169,31 @@ export function buildDemoGraph(): { nodes: GraphNode[]; links: GraphLink[] } {
   for (const hub of hubs) {
     nodes.push({
       id: hub.id,
-      kind: "segment",
       label: hub.label,
-      description: `${hub.label} audience hub`,
-      radius: 9,
-      degree: degree.get(hub.id) ?? 0,
       hub: true,
+      data: {
+        kind: "audience",
+        description: `${hub.label} audience hub`,
+        degree: degree.get(hub.id) ?? 0,
+        size: 9,
+      },
     });
   }
   for (const pattern of patterns) {
-    const media = pattern.media;
+    const topicDegree = degree.get(pattern.id) ?? 0;
     nodes.push({
       id: pattern.id,
-      kind: "pattern",
       label: pattern.label,
-      description: `Observed in ${observedIn.get(pattern.id)?.length ?? 0} audience(s)`,
-      radius: 4 + Math.min(9, Math.sqrt(degree.get(pattern.id) ?? 1) * 1.9),
-      degree: degree.get(pattern.id) ?? 0,
-      media,
-      hub: false,
+      data: {
+        kind: "topic",
+        description: `Observed in ${observedIn.get(pattern.id)?.length ?? 0} audience(s)`,
+        media: pattern.media,
+        degree: topicDegree,
+        // Degree sets the size: a quiet topic stays small, a hub-adjacent one
+        // grows, capped so the busiest topic never swallows the map. It lives
+        // in data, not `radius`, so the node-scale control can still apply.
+        size: 4 + Math.min(9, Math.sqrt(topicDegree || 1) * 1.9),
+      },
     });
   }
 
