@@ -160,13 +160,7 @@ export function DemoApp() {
   );
 
   return (
-    <main
-      className="demo"
-      aria-label="Animal taxonomy graph"
-      // The drawer is an overlay, but the graph's own chrome has to stay
-      // reachable, so the canvas shifts its toolbar rather than re-framing.
-      data-note-open={selectedId ? "true" : "false"}
-    >
+    <main className="demo" aria-label="Animal taxonomy graph">
       <GraphCanvas
         theme={theme}
         nodes={graph.nodes}

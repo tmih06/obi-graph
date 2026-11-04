@@ -2239,17 +2239,24 @@ export function GraphCanvas<N = unknown, L = unknown>({
           >
             <ControlIcon name="fit" />
           </button>
-          {selectedId && (
-            <button
-              type="button"
-              className="graph-canvas__control"
-              aria-label="Focus selected node"
-              title="Focus selected node"
-              onClick={() => fitSelectionCamera(reducedMotion ? 0 : 450)}
-            >
-              <ControlIcon name="focus" />
-            </button>
-          )}
+          {/*
+            The focus control keeps its slot when nothing is selected. The
+            toolbar is right-anchored, so an appearing button would shove every
+            other control sideways the moment a node is clicked.
+          */}
+          <button
+            type="button"
+            className="graph-canvas__control"
+            aria-label="Focus selected node"
+            title="Focus selected node"
+            aria-hidden={selectedId ? undefined : true}
+            tabIndex={selectedId ? undefined : -1}
+            disabled={!selectedId}
+            data-hidden={selectedId ? undefined : "true"}
+            onClick={() => fitSelectionCamera(reducedMotion ? 0 : 450)}
+          >
+            <ControlIcon name="focus" />
+          </button>
           <button
             type="button"
             className="graph-canvas__control"

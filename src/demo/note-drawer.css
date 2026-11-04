@@ -1,21 +1,18 @@
 /* Overlay note panel. It floats above the canvas, so the graph never re-flows. */
 
-.demo[data-note-open="true"] .graph-canvas {
-  /* Keep the graph toolbar clear of the panel. */
-  --graph-inset-right: min(420px, 100vw);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .note-drawer,
-  .note-drawer[data-open="true"],
-  .graph-canvas__toolbar {
+  .note-drawer[data-open="true"] {
     transition: none;
   }
 }
 
 .note-drawer {
   position: absolute;
-  inset-block: 0;
+  /* Starts below the graph's toolbar row so the controls are never covered and
+     nothing has to move out of the way. */
+  inset-block-start: 56px;
+  inset-block-end: 0;
   inset-inline-end: 0;
   z-index: 40;
   display: flex;
