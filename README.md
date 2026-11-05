@@ -2,6 +2,8 @@
 
 # obi-graph
 
+[**Live demo**](https://obi-graph.tmih06.com/) — a 1,420-species animal taxonomy with notes, wiki-links and the density slider.
+
 An Obsidian-style graph view for React. Force-directed dots, labels that fade in
 as you zoom, hover focus that dims everything else, draggable nodes, inertial
 pan and pointer-anchored zoom — all drawn on a single `<canvas>`.
@@ -263,3 +265,7 @@ The taxonomy ships as a positional, interned payload — every Wikidata QID, ran
 and group name appears once in a lookup table, and rows carry small integers.
 Rolldown emits it as a separate chunk with `modulepreload`, so data and code
 download in parallel and the first paint is not blocked by the payload.
+
+## License
+
+MIT © Thanh Minh. See [LICENSE](LICENSE).
