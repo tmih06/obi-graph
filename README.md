@@ -12,20 +12,33 @@ It is the graph _engine_, not a note-taking app: you own the data and the
 styling. React 18+ is a peer dependency and `d3-force` is the only runtime
 dependency.
 
+## Install
+
 ```sh
 npm install obi-graph react
-# or: bun add obi-graph react
 ```
 
+```sh
+# pnpm install obi-graph react
+# yarn add obi-graph react
+# bun add obi-graph react
+```
+
+React is a peer dependency, so install it alongside — the package does not
+bundle its own copy. Nothing else is required: `d3-force` comes in as a normal
+dependency, and the published bundle is 16.3 KB gzipped plus 1.1 KB of CSS.
+
+Then render it. The canvas fills its parent, so the parent needs a height:
+
 ```tsx
-import { GraphCanvas } from "obi-graph";
+import { GraphCanvas, type GraphLink, type GraphNode } from "obi-graph";
 import "obi-graph/styles.css";
 
-const nodes = [
+const nodes: GraphNode[] = [
   { id: "lion", label: "Lion", radius: 8 },
   { id: "cat", label: "Cat", radius: 5 },
 ];
-const links = [{ source: "cat", target: "lion" }];
+const links: GraphLink[] = [{ source: "cat", target: "lion" }];
 
 export function Graph() {
   return (
@@ -36,9 +49,43 @@ export function Graph() {
 }
 ```
 
-The canvas fills its parent, so give the parent a height. Import the stylesheet
-once. In the Next.js App Router, put the wrapper in a `"use client"` module —
-imports and SSR are safe, drawing starts after mount.
+The stylesheet import is the piece that is easy to miss. It carries the
+palette tokens the renderer reads at runtime and the container rule
+(`position: absolute; inset: 0`) that makes the graph fill its parent, so
+skipping it collapses the layout even though the canvas still paints.
+
+| Runtime  | Supported                                                      |
+| -------- | -------------------------------------------------------------- |
+| React    | 18 and 19 (peer `>=18`); both render and typecheck             |
+| Bundlers | Any that honour `exports` — Vite, Next.js, webpack, Bun        |
+| SSR      | Safe; markup renders on the server, drawing starts after mount |
+
+The package is ESM-only and tree-shakeable: importing just `connectionsFor`
+bundles 28 KB before gzip, versus 83 KB for the whole entry. Bundlers resolve it
+through the `exports` map (verified with Vite, Bun and webpack 5). CommonJS code
+can `require()` it on Node 20.19+ or 22.12+, where requiring ESM is supported;
+on older Node it throws `ERR_REQUIRE_ESM` — use an import there instead.
+
+### Next.js
+
+Put the component in a `"use client"` module. Imports and SSR are safe — the
+graph draws after mount — but the canvas touches `window`, so it cannot run in a
+Server Component body.
+
+```tsx
+// app/graph.tsx
+"use client";
+import { GraphCanvas, type GraphLink, type GraphNode } from "obi-graph";
+import "obi-graph/styles.css";
+
+export function Graph(props: { nodes: GraphNode[]; links: GraphLink[] }) {
+  return (
+    <div style={{ position: "relative", height: 500 }}>
+      <GraphCanvas {...props} />
+    </div>
+  );
+}
+```
 
 ## Compared to Obsidian's graph view
 
