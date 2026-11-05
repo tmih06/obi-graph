@@ -1,3 +1,5 @@
+<img width="1802" height="973" alt="image" src="https://github.com/user-attachments/assets/238ea12f-36d3-43ff-83f9-ef1e5b961bea" />
+
 # obi-graph
 
 An Obsidian-style graph view for React. Force-directed dots, labels that fade in
