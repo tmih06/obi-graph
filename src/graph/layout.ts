@@ -1,6 +1,6 @@
 /**
  * Internal layout: normalizes the public model into render-ready points, owns
- * the d3-force configuration and runs the offscreen warmup.
+ * the force configuration and runs the offscreen warmup.
  *
  * The public model stays generic and sparse; the canvas wants every visual
  * value present. Resolution happens once per data change, never inside a
@@ -8,18 +8,16 @@
  */
 
 import {
+  createSimulation,
   forceCenter,
   forceLink,
-  forceSimulation,
   forceX,
   forceY,
-  type ForceCenter,
-  type ForceLink,
-  type ForceX,
-  type ForceY,
-  type SimulationLinkDatum,
-  type SimulationNodeDatum,
-} from "d3-force";
+  type Force,
+  type LinkForce,
+  type SimLink,
+  type SimNode,
+} from "./simulation.ts";
 import {
   gridCollide,
   gridManyBody,
@@ -30,7 +28,7 @@ import type { GraphValue, ResolvedGraphConfig } from "./config.ts";
 import { endpointId, type GraphLink, type GraphNode, type NodeShape } from "./model.ts";
 
 /** A node with every value the renderer reads already resolved. */
-export interface NodePoint extends SimulationNodeDatum {
+export interface NodePoint extends SimNode {
   id: string;
   label: string;
   radius: number;
@@ -51,7 +49,7 @@ export interface NodePoint extends SimulationNodeDatum {
 }
 
 /** A link with every stroke value resolved. Endpoints are ids until d3 resolves them. */
-export interface LinkPoint extends SimulationLinkDatum<NodePoint> {
+export interface LinkPoint extends SimLink<NodePoint> {
   id: string;
   width: number;
   dashed: boolean;
@@ -86,11 +84,11 @@ export interface CanvasGraph {
 
 export interface LayoutForces {
   charge: GridManyBodyForce;
-  link: ForceLink<NodePoint, LinkPoint>;
+  link: LinkForce<NodePoint, LinkPoint>;
   collide: GridCollideForce;
-  x: ForceX<NodePoint>;
-  y: ForceY<NodePoint>;
-  center: ForceCenter<NodePoint>;
+  x: Force<NodePoint>;
+  y: Force<NodePoint>;
+  center: Force<NodePoint>;
 }
 
 /** Golden angle: successive spiral points never share a direction. */
@@ -393,18 +391,17 @@ function resolvePin(
 function warmUp(graph: CanvasGraph, config: ResolvedGraphConfig<any, any>): void {
   if (config.physics.warmupTicks <= 0) return;
   const forces = layoutForces(config);
-  const simulation = forceSimulation<NodePoint, LinkPoint>(graph.nodes)
+  const simulation = createSimulation(graph.nodes);
+  simulation
     .force("charge", forces.charge)
     .force("link", forces.link)
     .force("collide", forces.collide)
     .force("x", forces.x)
     .force("y", forces.y)
-    .force("center", forces.center)
-    .stop();
+    .force("center", forces.center);
   forces.link.links(graph.links);
   simulation.alphaDecay(config.physics.alphaDecay).velocityDecay(config.physics.velocityDecay);
   simulation.tick(config.physics.warmupTicks);
-  simulation.stop();
   for (const node of graph.nodes) {
     node.vx = 0;
     node.vy = 0;

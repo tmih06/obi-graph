@@ -1,4 +1,4 @@
-import { forceSimulation, type Simulation } from "d3-force";
+import { createSimulation, type Simulation } from "./simulation.ts";
 import {
   useCallback,
   useEffect,
@@ -16,13 +16,7 @@ import {
   type NodeShape,
 } from "./model.ts";
 import { resolveConfig, type GraphConfig } from "./config.ts";
-import {
-  layoutForces,
-  makeGraphData,
-  type NodePoint,
-  type LinkPoint,
-  type CanvasGraph,
-} from "./layout.ts";
+import { layoutForces, makeGraphData, type NodePoint, type CanvasGraph } from "./layout.ts";
 import { ScreenGrid } from "./screen-grid.ts";
 import { HighlightTransition, type HighlightStyle } from "./highlight-transition.ts";
 import { GraphMetricsReporter, type GraphMetrics } from "./metrics.ts";
@@ -344,7 +338,7 @@ export interface GraphCanvasProps<N = unknown, L = unknown> {
 }
 
 /**
- * Graph canvas: native canvas rendering, d3-force layout, camera pan/zoom,
+ * Graph canvas: native canvas rendering, force layout, camera pan/zoom,
  * node dragging and selection. The canvas is visual; a caller's own list is
  * the keyboard and screen-reader path through the same nodes.
  */
@@ -392,7 +386,7 @@ export function GraphCanvas<N = unknown, L = unknown>({
   const metricsCallback = useRef(onMetrics);
   const highlightAnimating = useRef(false);
   const drawFrame = useRef(0);
-  const simulationRef = useRef<Simulation<NodePoint, LinkPoint> | null>(null);
+  const simulationRef = useRef<Simulation<NodePoint> | null>(null);
   const retainedAlpha = useRef(0);
   const relaxation = useRef<number | null>(null);
   /** Live pointers, so a second touch can become a pinch instead of a pan. */
@@ -1040,10 +1034,10 @@ export function GraphCanvas<N = unknown, L = unknown>({
   const mountedGraph = size.width > 0;
   useEffect(() => {
     if (!mountedGraph) return;
-    const simulation = forceSimulation<NodePoint, LinkPoint>(graphData.nodes)
+    const simulation = createSimulation(graphData.nodes);
+    simulation
       .alphaDecay(settings.physics.alphaDecay)
-      .velocityDecay(settings.physics.velocityDecay)
-      .stop();
+      .velocityDecay(settings.physics.velocityDecay);
     const forces = layoutForces(settings);
     simulation
       .force("charge", forces.charge)
@@ -1076,7 +1070,6 @@ export function GraphCanvas<N = unknown, L = unknown>({
     return () => {
       retainedAlpha.current = relaxation.current === null ? 0 : simulation.alpha();
       stopRelaxation();
-      simulation.stop();
       if (simulationRef.current === simulation) simulationRef.current = null;
     };
   }, [fitAll, graphData, settings, mountedGraph, requestPaint, runRelaxation, stopRelaxation]);

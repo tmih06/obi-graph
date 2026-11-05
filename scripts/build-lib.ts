@@ -1,8 +1,10 @@
 /**
  * Library build: ESM bundle + type declarations + stylesheet.
  *
- * Runtime code is bundled for the browser, while React (a peer dependency)
- * and the runtime libraries stay external so consumers install them normally.
+ * Runtime code is bundled for the browser, while React (the only peer
+ * dependency) stays external so consumers install it normally. Everything else
+ * — the force simulation included — is bundled, so the package has no runtime
+ * dependencies at all.
  * Declarations are emitted separately by tsc (see tsconfig.build.json) with
  * relative import extensions rewritten for NodeNext consumers.
  */
@@ -14,7 +16,7 @@ const dist = new URL("../dist/", import.meta.url);
 const binary = (name: string) =>
   fileURLToPath(new URL(`../node_modules/.bin/${name}`, import.meta.url));
 
-const externals = ["react", "react/jsx-runtime", "react-dom", "d3-force"];
+const externals = ["react", "react/jsx-runtime", "react-dom"];
 
 async function run(command: string[], label: string) {
   const child = Bun.spawn(command, { cwd: root, stdout: "inherit", stderr: "inherit" });
