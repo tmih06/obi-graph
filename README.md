@@ -54,7 +54,7 @@ The look and interaction model are deliberately the same.
 | Colour and size groups                                    | `nodes.color` / `nodes.radius` accessors   |
 | Runs inside Obsidian over your vault                      | A React component over your arrays         |
 | Search, tag filters, saved groups                         | Your UI — pass `activeIds` / `emphasisIds` |
-| Arrowheads and curved links                               | Not built in; links are straight strokes   |
+| Arrowheads and curved links                               | `links.arrow`, `links.curve` per link      |
 
 ## Data
 
