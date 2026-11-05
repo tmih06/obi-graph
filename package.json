@@ -13,9 +13,9 @@
     "react",
     "visualization"
   ],
+  "homepage": "https://github.com/tmih06/obi-graph#readme",
   "license": "MIT",
   "author": "Thanh Minh",
-  "homepage": "https://github.com/tmih06/obi-graph#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tmih06/obi-graph.git"
