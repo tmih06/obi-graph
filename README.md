@@ -9,8 +9,8 @@ as you zoom, hover focus that dims everything else, draggable nodes, inertial
 pan and pointer-anchored zoom — all drawn on a single `<canvas>`.
 
 It is the graph _engine_, not a note-taking app: you own the data and the
-styling. React 18+ is a peer dependency and `d3-force` is the only runtime
-dependency.
+styling. React 18+ is its only peer dependency — the force simulation and
+everything else ship inside the package.
 
 ## Install
 
@@ -25,8 +25,8 @@ npm install obi-graph react
 ```
 
 React is a peer dependency, so install it alongside — the package does not
-bundle its own copy. Nothing else is required: `d3-force` comes in as a normal
-dependency, and the published bundle is 16.3 KB gzipped plus 1.1 KB of CSS.
+bundle its own copy. Nothing else is required: there are no runtime
+dependencies at all.
 
 Then render it. The canvas fills its parent, so the parent needs a height:
 
@@ -222,7 +222,8 @@ the readout in its own component so it does not re-render the graph.
 The demo renders 3,584 nodes and 3,583 links at 60 fps while hovering, about
 40 fps during a node drag. Two engine choices get it there:
 
-- **Grid forces instead of quadtree forces.** `d3-force` rebuilds a quadtree
+- **Grid forces instead of quadtree forces.** A general-purpose force library
+  rebuilds a quadtree
   object graph every tick for both many-body repulsion and collision. At a few
   thousand nodes that costs ~16 ms and ~14 ms per tick, so a settle frame
   overruns. The built-in replacements keep d3's math and API on flat typed

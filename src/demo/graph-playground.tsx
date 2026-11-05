@@ -208,7 +208,7 @@ function PerformanceMetrics({ store }: { store: MetricsStore }) {
           <dt>Render CPU</dt>
           <dd data-metric="render">{metrics ? `${metrics.renderMs.toFixed(2)} ms/frame` : "—"}</dd>
         </div>
-        <div title="CPU time per d3-force simulation tick.">
+        <div title="CPU time per simulation tick.">
           <dt>Physics CPU</dt>
           <dd data-metric="physics">
             {metrics ? `${metrics.simulationMs.toFixed(2)} ms/tick` : "—"}
